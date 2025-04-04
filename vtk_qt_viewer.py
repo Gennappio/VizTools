@@ -18,6 +18,7 @@ import numpy as np
 import scipy.io as sio
 import vtk
 from pathlib import Path
+import argparse
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -37,7 +38,7 @@ except ImportError:
 class PhysiCellVTKQtViewer(QMainWindow):
     """Qt-based GUI application for PhysiCell VTK visualization"""
     
-    def __init__(self):
+    def __init__(self, initial_dir=None):
         """Initialize the application window and UI components"""
         super().__init__()
         
@@ -47,6 +48,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.max_frame = 0
         self.actors = []
         self.data_loaded = False
+        self.initial_dir = initial_dir or os.path.expanduser("~")
         
         # Set up the main window
         self.setWindowTitle("PhysiCell VTK Viewer")
@@ -161,11 +163,25 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.show_cells_cb.stateChanged.connect(self.update_visualization)
         display_layout.addWidget(self.show_cells_cb)
         
-        self.show_mat_cb = QCheckBox("Show .mat Data")
+        self.show_mat_cb = QCheckBox("Show Cell Data")
         self.show_mat_cb.setChecked(True)
         self.show_mat_cb.setEnabled(False)
         self.show_mat_cb.stateChanged.connect(self.update_visualization)
         display_layout.addWidget(self.show_mat_cb)
+        
+        self.show_microenv_cb = QCheckBox("Show Microenvironment")
+        self.show_microenv_cb.setChecked(True)
+        self.show_microenv_cb.setEnabled(False)
+        self.show_microenv_cb.stateChanged.connect(self.update_visualization)
+        display_layout.addWidget(self.show_microenv_cb)
+        
+        self.microenv_opacity_slider = QSlider(Qt.Horizontal)
+        self.microenv_opacity_slider.setRange(0, 100)
+        self.microenv_opacity_slider.setValue(50)
+        self.microenv_opacity_slider.setEnabled(False)
+        self.microenv_opacity_slider.valueChanged.connect(self.update_visualization)
+        display_layout.addWidget(QLabel("Microenvironment Opacity:"))
+        display_layout.addWidget(self.microenv_opacity_slider)
         
         self.cell_opacity_slider = QSlider(Qt.Horizontal)
         self.cell_opacity_slider.setRange(0, 100)
@@ -292,7 +308,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
         """Open a file dialog to select a PhysiCell output directory"""
         directory = QFileDialog.getExistingDirectory(
             self, "Select PhysiCell Output Directory", 
-            os.path.expanduser("~"),
+            self.initial_dir,
             QFileDialog.ShowDirsOnly
         )
         
@@ -319,7 +335,9 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 self.play_btn.setEnabled(True)
                 self.show_cells_cb.setEnabled(True)
                 self.show_mat_cb.setEnabled(True)
+                self.show_microenv_cb.setEnabled(True)
                 self.cell_opacity_slider.setEnabled(True)
+                self.microenv_opacity_slider.setEnabled(True)
                 
                 # Load the first frame
                 self.current_frame = 0
@@ -344,11 +362,20 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 except ValueError:
                     pass
                     
-        # Check for .mat files
+        # Check for .mat files (cells)
         for filename in os.listdir(self.output_dir):
             if filename.startswith("output") and filename.endswith("_cells.mat"):
                 try:
                     frame_num = int(filename[6:-10])
+                    max_frame = max(max_frame, frame_num)
+                except ValueError:
+                    pass
+                    
+        # Check for .mat files (microenvironment)
+        for filename in os.listdir(self.output_dir):
+            if filename.startswith("output") and filename.endswith("_microenvironment0.mat"):
+                try:
+                    frame_num = int(filename[6:-20])
                     max_frame = max(max_frame, frame_num)
                 except ValueError:
                     pass
@@ -378,15 +405,20 @@ class PhysiCellVTKQtViewer(QMainWindow):
         
         # Construct file paths
         xml_file = os.path.join(self.output_dir, f"output{frame_number:08d}.xml")
-        mat_file = os.path.join(self.output_dir, f"output{frame_number:08d}_cells.mat")
+        cell_mat_file = os.path.join(self.output_dir, f"output{frame_number:08d}_cells.mat")
+        microenv_mat_file = os.path.join(self.output_dir, f"output{frame_number:08d}_microenvironment0.mat")
         
         # Try to visualize the XML file if it exists and cells should be shown
         if os.path.exists(xml_file) and self.show_cells_cb.isChecked():
             self.visualize_cells_from_xml(xml_file)
         
-        # Try to visualize the .mat file if it exists and .mat data should be shown
-        if os.path.exists(mat_file) and self.show_mat_cb.isChecked():
-            self.visualize_mat_file(mat_file)
+        # Try to visualize the cells .mat file if it exists and .mat data should be shown
+        if os.path.exists(cell_mat_file) and self.show_mat_cb.isChecked():
+            self.visualize_mat_file(cell_mat_file)
+            
+        # Try to visualize the microenvironment .mat file if it exists
+        if os.path.exists(microenv_mat_file) and self.show_microenv_cb.isChecked():
+            self.visualize_microenvironment(microenv_mat_file)
         
         # Reset the camera if this is the first time loading a frame
         if not self.data_loaded:
@@ -399,8 +431,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
         info_text = f"Frame: {frame_number}"
         if os.path.exists(xml_file):
             info_text += f"\nXML: {os.path.basename(xml_file)}"
-        if os.path.exists(mat_file):
-            info_text += f"\nMAT: {os.path.basename(mat_file)}"
+        if os.path.exists(cell_mat_file):
+            info_text += f"\nCells: {os.path.basename(cell_mat_file)}"
+        if os.path.exists(microenv_mat_file):
+            info_text += f"\nMicroenv: {os.path.basename(microenv_mat_file)}"
         self.info_label.setText(info_text)
     
     def visualize_cells_from_xml(self, xml_file):
@@ -760,6 +794,236 @@ class PhysiCellVTKQtViewer(QMainWindow):
             traceback.print_exc()
             return False
     
+    def visualize_microenvironment(self, file_path):
+        """Visualize microenvironment data from a .mat file"""
+        try:
+            mat_contents = self.load_mat_file(file_path)
+            
+            if mat_contents is None:
+                return False
+            
+            # Debug output to help diagnose issues
+            print(f"Microenvironment file keys: {list(mat_contents.keys())}")
+            
+            # Look for substrate data - PhysiCell format
+            if 'multiscale_microenvironment' in mat_contents:
+                microenv_data = mat_contents['multiscale_microenvironment']
+                
+                # Print structure information for debugging
+                print(f"Microenvironment data shape: {microenv_data.shape}")
+                
+                # The data is typically stored with substrates in rows and positions in columns
+                # First several rows contain position info, then substrate values
+                if microenv_data.shape[0] > 4:  # At least one substrate
+                    # First 3 rows are x,y,z coordinates
+                    x = microenv_data[0, :].flatten()  # x coordinates
+                    y = microenv_data[1, :].flatten()  # y coordinates
+                    z = microenv_data[2, :].flatten()  # z coordinates
+                    
+                    # Print coordinate information for debugging
+                    print(f"X range: {x.min()} to {x.max()}, shape: {x.shape}")
+                    print(f"Y range: {y.min()} to {y.max()}, shape: {y.shape}")
+                    print(f"Z range: {z.min()} to {z.max()}, shape: {z.shape}")
+                    
+                    # Number of substrates (chemical species)
+                    substrate_count = microenv_data.shape[0] - 4
+                    position_indices = microenv_data.shape[1]
+                    
+                    # Determine the grid dimensions
+                    # In PhysiCell, the grid is typically structured with equally spaced points
+                    unique_x = np.unique(x)
+                    unique_y = np.unique(y)
+                    unique_z = np.unique(z)
+                    
+                    nx = len(unique_x)
+                    ny = len(unique_y)
+                    nz = len(unique_z)
+                    
+                    print(f"Grid dimensions: {nx} x {ny} x {nz}")
+                    
+                    # Create a structured grid for the visualization
+                    if nz <= 1:  # 2D case - add a small z-dimension for visualization
+                        nz = 2
+                        unique_z = np.array([z[0]-0.5, z[0]+0.5]) if len(unique_z) > 0 else np.array([-0.5, 0.5])
+                    
+                    # Create VTK arrays for coordinates
+                    x_vtk = vtk.vtkDoubleArray()
+                    for val in unique_x:
+                        x_vtk.InsertNextValue(val)
+                        
+                    y_vtk = vtk.vtkDoubleArray()
+                    for val in unique_y:
+                        y_vtk.InsertNextValue(val)
+                        
+                    z_vtk = vtk.vtkDoubleArray()
+                    for val in unique_z:
+                        z_vtk.InsertNextValue(val)
+                    
+                    # Create a rectilinear grid (which works well for regularly spaced data)
+                    grid = vtk.vtkRectilinearGrid()
+                    grid.SetDimensions(nx, ny, nz)
+                    grid.SetXCoordinates(x_vtk)
+                    grid.SetYCoordinates(y_vtk)
+                    grid.SetZCoordinates(z_vtk)
+                    
+                    # Process each substrate
+                    for substrate_idx in range(substrate_count):
+                        # Get the substrate data (row 4+idx in the microenvironment matrix)
+                        substrate_data = microenv_data[4 + substrate_idx, :]
+                        
+                        # Print substrate range for debugging
+                        print(f"Substrate {substrate_idx} range: {substrate_data.min()} to {substrate_data.max()}")
+                        
+                        # Create the scalar array for this substrate
+                        substrate_vtk = vtk.vtkDoubleArray()
+                        substrate_vtk.SetName(f"Substrate_{substrate_idx}")
+                        
+                        # For a rectilinear grid, we need to map the unstructured data to the structured grid
+                        # This requires reshaping/interpolating the values to fit the grid
+                        
+                        # Initialize a 3D array to hold the interpolated values
+                        grid_values = np.zeros((nx, ny, nz))
+                        
+                        # Simple case: the number of points matches the grid size
+                        if nx * ny == len(substrate_data) and nz <= 2:
+                            # Reshape for 2D data mapped to a 3D visualization
+                            grid_2d = substrate_data.reshape((ny, nx)).transpose()
+                            
+                            # Duplicate the 2D layer if we needed to create a fake z-dimension
+                            for k in range(nz):
+                                grid_values[:, :, k] = grid_2d
+                                
+                        else:
+                            # More complex case: we need to map points to the 3D grid
+                            # Use nearest neighbor mapping
+                            
+                            # Create KD-tree for fast nearest-neighbor lookup
+                            from scipy.spatial import cKDTree
+                            points = np.vstack((x, y, z)).T
+                            tree = cKDTree(points)
+                            
+                            # Query points on the structured grid
+                            all_points = []
+                            for i, xi in enumerate(unique_x):
+                                for j, yi in enumerate(unique_y):
+                                    for k, zi in enumerate(unique_z):
+                                        all_points.append([xi, yi, zi])
+                            
+                            all_points = np.array(all_points)
+                            
+                            # Find nearest neighbors
+                            distances, indices = tree.query(all_points, k=1)
+                            
+                            # Map values to grid
+                            counter = 0
+                            for i in range(nx):
+                                for j in range(ny):
+                                    for k in range(nz):
+                                        if counter < len(indices):
+                                            idx = indices[counter]
+                                            if idx < len(substrate_data):
+                                                grid_values[i, j, k] = substrate_data[idx]
+                                        counter += 1
+                        
+                        # Add the scalar values to the grid in VTK order (k, j, i)
+                        for k in range(nz):
+                            for j in range(ny):
+                                for i in range(nx):
+                                    substrate_vtk.InsertNextValue(grid_values[i, j, k])
+                        
+                        grid.GetPointData().SetScalars(substrate_vtk)
+                        
+                        # Create a volume mapper
+                        mapper = vtk.vtkSmartVolumeMapper()
+                        mapper.SetInputData(grid)
+                        
+                        # Create a color transfer function
+                        ctf = vtk.vtkColorTransferFunction()
+                        min_val = substrate_data.min()
+                        max_val = substrate_data.max()
+                        range_val = max_val - min_val
+                        
+                        if range_val > 0:
+                            # Create color points that work well for visualizing concentrations
+                            ctf.AddRGBPoint(min_val, 0.0, 0.0, 1.0)  # Blue for min
+                            ctf.AddRGBPoint(min_val + 0.25 * range_val, 0.0, 1.0, 1.0)  # Cyan
+                            ctf.AddRGBPoint(min_val + 0.5 * range_val, 0.0, 1.0, 0.0)   # Green
+                            ctf.AddRGBPoint(min_val + 0.75 * range_val, 1.0, 1.0, 0.0)  # Yellow
+                            ctf.AddRGBPoint(max_val, 1.0, 0.0, 0.0)  # Red for max
+                        else:
+                            # Handle case where all values are the same
+                            ctf.AddRGBPoint(min_val, 0.0, 0.0, 1.0)
+                        
+                        # Create an opacity transfer function
+                        otf = vtk.vtkPiecewiseFunction()
+                        
+                        # Set opacity based on value and user slider
+                        opacity_factor = self.microenv_opacity_slider.value() / 100.0
+                        
+                        # For values close to minimum, set lower opacity
+                        otf.AddPoint(min_val, 0.0)
+                        
+                        # Higher opacity for higher values, scaled by the user slider
+                        if range_val > 0:
+                            otf.AddPoint(min_val + 0.25 * range_val, 0.1 * opacity_factor)
+                            otf.AddPoint(min_val + 0.5 * range_val, 0.3 * opacity_factor)
+                            otf.AddPoint(min_val + 0.75 * range_val, 0.6 * opacity_factor)
+                            otf.AddPoint(max_val, 0.8 * opacity_factor)
+                        else:
+                            otf.AddPoint(min_val, 0.5 * opacity_factor)
+                        
+                        # Create volume properties
+                        volume_property = vtk.vtkVolumeProperty()
+                        volume_property.SetColor(ctf)
+                        volume_property.SetScalarOpacity(otf)
+                        volume_property.ShadeOn()
+                        volume_property.SetInterpolationTypeToLinear()
+                        
+                        # Create the volume
+                        volume = vtk.vtkVolume()
+                        volume.SetMapper(mapper)
+                        volume.SetProperty(volume_property)
+                        
+                        # Add the volume to the renderer
+                        self.renderer.AddVolume(volume)
+                        self.actors.append(volume)
+                        
+                        # Add color bar for this substrate
+                        scalar_bar = vtk.vtkScalarBarActor()
+                        scalar_bar.SetLookupTable(ctf)
+                        scalar_bar.SetTitle(f"Substrate {substrate_idx}")
+                        scalar_bar.SetNumberOfLabels(5)
+                        
+                        # Position the scalar bar based on the substrate index
+                        x_pos = 0.05 + (substrate_idx * 0.15)
+                        scalar_bar.SetPosition(x_pos, 0.05)
+                        scalar_bar.SetWidth(0.1)
+                        scalar_bar.SetHeight(0.3)
+                        
+                        self.renderer.AddActor2D(scalar_bar)
+                        self.actors.append(scalar_bar)
+                    
+                    # Add info text about the microenvironment
+                    text_actor = vtk.vtkTextActor()
+                    text_actor.SetInput(f"Microenvironment: {substrate_count} substrates")
+                    text_actor.GetTextProperty().SetFontSize(16)
+                    text_actor.GetTextProperty().SetColor(1, 1, 0)
+                    text_actor.SetPosition(20, 90)
+                    self.renderer.AddActor2D(text_actor)
+                    self.actors.append(text_actor)
+                    
+                    return True
+                    
+            # If we get here, we couldn't visualize the microenvironment
+            print("No valid microenvironment data found in the file.")
+            return False
+            
+        except Exception as e:
+            print(f"Error visualizing microenvironment file: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
     def update_visualization(self):
         """Update the visualization based on current settings"""
         if self.data_loaded:
@@ -815,13 +1079,44 @@ class PhysiCellVTKQtViewer(QMainWindow):
 
 def main():
     """Main entry point for the application"""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='PhysiCell VTK Viewer')
+    parser.add_argument('-f', '--folder', 
+                       help='Initial folder for loading PhysiCell output',
+                       default=None)
+    args = parser.parse_args()
+    
     app = QApplication(sys.argv)
     
     # Set application style
     app.setStyle("Fusion")
     
-    window = PhysiCellVTKQtViewer()
+    # Pass the initial directory to the viewer
+    window = PhysiCellVTKQtViewer(initial_dir=args.folder)
     window.show()
+    
+    # If a folder was specified and exists, automatically load it
+    if args.folder and os.path.isdir(args.folder):
+        window.output_dir = args.folder
+        window.directory_label.setText(args.folder)
+        window.find_max_frame()
+        if window.max_frame >= 0:
+            window.frame_slider.setMaximum(window.max_frame)
+            window.frame_spinbox.setMaximum(window.max_frame)
+            window.frame_slider.setEnabled(True)
+            window.frame_spinbox.setEnabled(True)
+            window.prev_btn.setEnabled(True)
+            window.next_btn.setEnabled(True)
+            window.play_btn.setEnabled(True)
+            window.show_cells_cb.setEnabled(True)
+            window.show_mat_cb.setEnabled(True)
+            window.show_microenv_cb.setEnabled(True)
+            window.cell_opacity_slider.setEnabled(True)
+            window.microenv_opacity_slider.setEnabled(True)
+            window.current_frame = 0
+            window.load_frame(window.current_frame)
+            window.data_loaded = True
+            window.status_bar.showMessage(f"Loaded directory: {args.folder}, {window.max_frame+1} frames found")
     
     sys.exit(app.exec_())
 
