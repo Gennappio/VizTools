@@ -157,11 +157,11 @@ class PhysiCellVTKQtViewer(QMainWindow):
         display_group = QGroupBox("Display Options")
         display_layout = QVBoxLayout(display_group)
         
-        self.show_cells_cb = QCheckBox("Show Cells")
-        self.show_cells_cb.setChecked(True)
-        self.show_cells_cb.setEnabled(False)
-        self.show_cells_cb.stateChanged.connect(self.update_visualization)
-        display_layout.addWidget(self.show_cells_cb)
+        self.microenv_wireframe_cb = QCheckBox("Microenvironment Wireframe")
+        self.microenv_wireframe_cb.setChecked(False)
+        self.microenv_wireframe_cb.setEnabled(False)
+        self.microenv_wireframe_cb.stateChanged.connect(self.update_visualization)
+        display_layout.addWidget(self.microenv_wireframe_cb)
         
         self.show_mat_cb = QCheckBox("Show Cell Data")
         self.show_mat_cb.setChecked(True)
@@ -333,7 +333,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 self.prev_btn.setEnabled(True)
                 self.next_btn.setEnabled(True)
                 self.play_btn.setEnabled(True)
-                self.show_cells_cb.setEnabled(True)
+                self.microenv_wireframe_cb.setEnabled(True)
                 self.show_mat_cb.setEnabled(True)
                 self.show_microenv_cb.setEnabled(True)
                 self.cell_opacity_slider.setEnabled(True)
@@ -408,8 +408,8 @@ class PhysiCellVTKQtViewer(QMainWindow):
         cell_mat_file = os.path.join(self.output_dir, f"output{frame_number:08d}_cells.mat")
         microenv_mat_file = os.path.join(self.output_dir, f"output{frame_number:08d}_microenvironment0.mat")
         
-        # Try to visualize the XML file if it exists and cells should be shown
-        if os.path.exists(xml_file) and self.show_cells_cb.isChecked():
+        # Try to visualize the XML file if it exists
+        if os.path.exists(xml_file):
             self.visualize_cells_from_xml(xml_file)
         
         # Try to visualize the cells .mat file if it exists and .mat data should be shown
@@ -456,6 +456,50 @@ class PhysiCellVTKQtViewer(QMainWindow):
             else:
                 positions_z = np.zeros_like(positions_x)
             
+            # Print cell bounds information from XML
+            print("\n==== Cell Bounds from XML ====")
+            print(f"X range: {positions_x.min():.6f} to {positions_x.max():.6f}")
+            print(f"Y range: {positions_y.min():.6f} to {positions_y.max():.6f}")
+            print(f"Z range: {positions_z.min():.6f} to {positions_z.max():.6f}")
+            print(f"Number of cells: {len(positions_x)}")
+            
+            # Try to get microenvironment data bounds for comparison
+            try:
+                microenv_file = xml_file.replace(".xml", "_microenvironment0.mat")
+                if os.path.exists(microenv_file):
+                    microenv_contents = self.load_mat_file(microenv_file)
+                    if 'multiscale_microenvironment' in microenv_contents:
+                        microenv_data = microenv_contents['multiscale_microenvironment']
+                        
+                        # Extract coordinate bounds from microenvironment data
+                        micro_x = microenv_data[0, :].flatten()
+                        micro_y = microenv_data[1, :].flatten()
+                        micro_z = microenv_data[2, :].flatten()
+                        
+                        # Print microenvironment bounds
+                        print("\n==== Microenvironment Bounds ====")
+                        print(f"X range: {micro_x.min():.6f} to {micro_x.max():.6f}")
+                        print(f"Y range: {micro_y.min():.6f} to {micro_y.max():.6f}")
+                        print(f"Z range: {micro_z.min():.6f} to {micro_z.max():.6f}")
+                        
+                        # Calculate bounds differences
+                        x_diff_min = positions_x.min() - micro_x.min()
+                        x_diff_max = micro_x.max() - positions_x.max()
+                        y_diff_min = positions_y.min() - micro_y.min()
+                        y_diff_max = micro_y.max() - positions_y.max()
+                        z_diff_min = positions_z.min() - micro_z.min()
+                        z_diff_max = micro_z.max() - positions_z.max()
+                        
+                        print("\n==== Bounds Differences (positive means cells are inside) ====")
+                        print(f"X min difference: {x_diff_min:.6f}")
+                        print(f"X max difference: {x_diff_max:.6f}")
+                        print(f"Y min difference: {y_diff_min:.6f}")
+                        print(f"Y max difference: {y_diff_max:.6f}")
+                        print(f"Z min difference: {z_diff_min:.6f}")
+                        print(f"Z max difference: {z_diff_max:.6f}")
+            except Exception as e:
+                print(f"Error comparing with microenvironment: {e}")
+            
             # Calculate radii
             cell_vols = cell_df['total_volume'].values
             four_thirds_pi = 4.188790204786391
@@ -464,19 +508,6 @@ class PhysiCellVTKQtViewer(QMainWindow):
             
             # Get cell types
             cell_types = cell_df['cell_type'].values.astype(int)
-            
-            # Create points for cell centers
-            points = vtk.vtkPoints()
-            num_cells = len(positions_x)
-            
-            # Create arrays for colors and sizes
-            colors = vtk.vtkUnsignedCharArray()
-            colors.SetNumberOfComponents(3)
-            colors.SetName("Colors")
-            
-            sizes = vtk.vtkFloatArray()
-            sizes.SetNumberOfComponents(1)
-            sizes.SetName("Sizes")
             
             # Color mapping for different cell types
             cell_type_colors = {
@@ -489,43 +520,68 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 6: (0, 255, 255),    # Cyan for type 6
             }
             
-            # Add points and data
+            # Create a direct polydata visualization instead of using glyphs
+            num_cells = len(positions_x)
+            all_points = vtk.vtkPoints()
+            all_cells = vtk.vtkCellArray()
+            
+            # Create color array
+            colors = vtk.vtkUnsignedCharArray()
+            colors.SetNumberOfComponents(3)
+            colors.SetName("Colors")
+            
+            # For each cell, create a colored sphere as a polydata
             for i in range(num_cells):
-                points.InsertNextPoint(positions_x[i], positions_y[i], positions_z[i])
+                # Get cell properties
+                x, y, z = positions_x[i], positions_y[i], positions_z[i]
+                radius = cell_radii[i]
                 
-                # Set color based on cell type
+                # Get color for this cell type
                 ct = cell_types[i]
                 color = cell_type_colors.get(ct, (180, 180, 180))
-                colors.InsertNextTuple3(*color)
-                sizes.InsertNextValue(cell_radii[i])
+                
+                # Create sphere for this cell
+                sphere_source = vtk.vtkSphereSource()
+                sphere_source.SetCenter(x, y, z)
+                sphere_source.SetRadius(radius / 1000.0)  # Make cells 1000 times smaller
+                sphere_source.SetPhiResolution(8)  # Lower resolution for better performance
+                sphere_source.SetThetaResolution(8)
+                sphere_source.Update()
+                
+                # Get polydata from the sphere source
+                sphere_polydata = sphere_source.GetOutput()
+                
+                # Get number of points in the current polydata
+                num_points = all_points.GetNumberOfPoints()
+                
+                # Add sphere points to the combined polydata
+                for j in range(sphere_polydata.GetNumberOfPoints()):
+                    point = sphere_polydata.GetPoint(j)
+                    all_points.InsertNextPoint(point)
+                    
+                    # Add the same color for each point of this cell
+                    colors.InsertNextTuple3(*color)
+                
+                # Add sphere cells (polygons) to the combined polydata
+                for j in range(sphere_polydata.GetNumberOfCells()):
+                    cell = sphere_polydata.GetCell(j)
+                    polygon = vtk.vtkPolygon()
+                    polygon.GetPointIds().SetNumberOfIds(cell.GetNumberOfPoints())
+                    
+                    for k in range(cell.GetNumberOfPoints()):
+                        polygon.GetPointIds().SetId(k, cell.GetPointId(k) + num_points)
+                    
+                    all_cells.InsertNextCell(polygon)
             
-            # Create a polydata object
+            # Create combined polydata for all cells
             polydata = vtk.vtkPolyData()
-            polydata.SetPoints(points)
-            
-            # Add the color and size data to the points
+            polydata.SetPoints(all_points)
+            polydata.SetPolys(all_cells)
             polydata.GetPointData().SetScalars(colors)
-            polydata.GetPointData().AddArray(sizes)
-            
-            # Create the sphere source for glyphing
-            sphere = vtk.vtkSphereSource()
-            sphere.SetPhiResolution(8)
-            sphere.SetThetaResolution(8)
-            sphere.SetRadius(1.0)
-            
-            # Create the glyph
-            glyph = vtk.vtkGlyph3D()
-            glyph.SetSourceConnection(sphere.GetOutputPort())
-            glyph.SetInputData(polydata)
-            glyph.SetScaleModeToScaleByScalar()
-            glyph.SetScaleFactor(1.0)
-            glyph.SetColorModeToColorByScalar()
-            glyph.SetInputArrayToProcess(0, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS, "Sizes")
-            glyph.SetInputArrayToProcess(1, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS, "Colors")
             
             # Create mapper and actor
             mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputConnection(glyph.GetOutputPort())
+            mapper.SetInputData(polydata)
             
             actor = vtk.vtkActor()
             actor.SetMapper(mapper)
@@ -573,6 +629,23 @@ class PhysiCellVTKQtViewer(QMainWindow):
             mat_contents = {k:v for k, v in mat_contents.items() 
                            if not k.startswith('__')}
             
+            # Print the entire content of the cells.mat file
+            print("\n==== Contents of cells.mat file ====")
+            for key, value in mat_contents.items():
+                print(f"Key: {key}")
+                print(f"Type: {type(value)}")
+                print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
+                if isinstance(value, np.ndarray) and value.size < 20:  # Only print small arrays fully
+                    # Format array elements as fixed-point notation
+                    if np.issubdtype(value.dtype, np.number):
+                        value_str = np.array2string(value, precision=6, suppress_small=True, formatter={'float_kind': lambda x: f"{x:.6f}"})
+                        print(f"Content: {value_str}")
+                    else:
+                        print(f"Content: {value}")
+                else:
+                    print(f"Content: {type(value)} (too large to display)")
+                print("-" * 50)
+            
             return mat_contents
         
         except Exception as e:
@@ -602,16 +675,25 @@ class PhysiCellVTKQtViewer(QMainWindow):
         else:
             normalized_values = (values - min_val) / (max_val - min_val)
         
-        # Create points for visualization
+        # Create points for the polyline
         points = vtk.vtkPoints()
         for i in range(n_points):
             points.InsertNextPoint(x[i], y[i], z[i])
         
-        # Create a polydata for points
+        # Create a polyline
+        lines = vtk.vtkCellArray()
+        polyline = vtk.vtkPolyLine()
+        polyline.GetPointIds().SetNumberOfIds(n_points)
+        for i in range(n_points):
+            polyline.GetPointIds().SetId(i, i)
+        lines.InsertNextCell(polyline)
+        
+        # Create polydata for the polyline
         polydata = vtk.vtkPolyData()
         polydata.SetPoints(points)
+        polydata.SetLines(lines)
         
-        # Add scalar values
+        # Add scalar values to the polydata
         scalars = vtk.vtkFloatArray()
         scalars.SetNumberOfComponents(1)
         scalars.SetName("Values")
@@ -619,70 +701,62 @@ class PhysiCellVTKQtViewer(QMainWindow):
             scalars.InsertNextValue(value)
         polydata.GetPointData().SetScalars(scalars)
         
-        # Create spheres for each point
-        sphere = vtk.vtkSphereSource()
-        sphere.SetPhiResolution(8)
-        sphere.SetThetaResolution(8)
-        sphere.SetRadius(1.0)
-        
-        glyph = vtk.vtkGlyph3D()
-        glyph.SetInputData(polydata)
-        glyph.SetSourceConnection(sphere.GetOutputPort())
-        glyph.SetScaleModeToScaleByScalar()
-        glyph.SetScaleFactor(3.0)
-        glyph.Update()
-        
-        # Create a tube connecting the points
-        points_for_line = vtk.vtkPoints()
-        for i in range(n_points):
-            points_for_line.InsertNextPoint(x[i], y[i], z[i])
-        
-        lines = vtk.vtkCellArray()
-        line = vtk.vtkPolyLine()
-        line.GetPointIds().SetNumberOfIds(n_points)
-        for i in range(n_points):
-            line.GetPointIds().SetId(i, i)
-        lines.InsertNextCell(line)
-        
-        line_polydata = vtk.vtkPolyData()
-        line_polydata.SetPoints(points_for_line)
-        line_polydata.SetLines(lines)
-        
-        # Add scalar values to the line
-        line_scalars = vtk.vtkFloatArray()
-        line_scalars.SetNumberOfComponents(1)
-        line_scalars.SetName("LineValues")
-        for value in values:
-            line_scalars.InsertNextValue(value)
-        line_polydata.GetPointData().SetScalars(line_scalars)
-        
-        # Create a tube
+        # Create a tube filter for better visualization
         tube_filter = vtk.vtkTubeFilter()
-        tube_filter.SetInputData(line_polydata)
-        tube_filter.SetRadius(2.0)
-        tube_filter.SetNumberOfSides(8)
+        tube_filter.SetInputData(polydata)
+        tube_filter.SetRadius(3.0)  # Increased radius
+        tube_filter.SetNumberOfSides(16)  # Higher resolution
         tube_filter.SetVaryRadiusToVaryRadiusByScalar()
+        tube_filter.SetRadiusFactor(5.0)  # Scale by scalar values
         tube_filter.Update()
         
-        # Create mappers
-        points_mapper = vtk.vtkPolyDataMapper()
-        points_mapper.SetInputConnection(glyph.GetOutputPort())
-        points_mapper.SetScalarRange(min_val, max_val)
-        
+        # Create mapper for the tube
         tube_mapper = vtk.vtkPolyDataMapper()
         tube_mapper.SetInputConnection(tube_filter.GetOutputPort())
         tube_mapper.SetScalarRange(min_val, max_val)
         
-        # Create actors
-        points_actor = vtk.vtkActor()
-        points_actor.SetMapper(points_mapper)
-        
+        # Create actor for the tube
         tube_actor = vtk.vtkActor()
         tube_actor.SetMapper(tube_mapper)
         
+        # Create a sphere source for the endpoints
+        sphere = vtk.vtkSphereSource()
+        sphere.SetRadius(5.0)
+        sphere.SetPhiResolution(16)
+        sphere.SetThetaResolution(16)
+        sphere.Update()
+        
+        # Create a point glyph just for start/end markers
+        start_point = vtk.vtkPoints()
+        start_point.InsertNextPoint(x[0], y[0], z[0])
+        end_point = vtk.vtkPoints()
+        end_point.InsertNextPoint(x[-1], y[-1], z[-1])
+        
+        # Create polydata for the points
+        start_polydata = vtk.vtkPolyData()
+        start_polydata.SetPoints(start_point)
+        end_polydata = vtk.vtkPolyData()
+        end_polydata.SetPoints(end_point)
+        
+        # Create a mapper for start point
+        start_mapper = vtk.vtkPolyDataMapper()
+        start_mapper.SetInputData(sphere.GetOutput())
+        start_actor = vtk.vtkActor()
+        start_actor.SetMapper(start_mapper)
+        start_actor.SetPosition(x[0], y[0], z[0])
+        start_actor.GetProperty().SetColor(0, 0, 1)  # Blue for start
+        
+        # Create a mapper for end point
+        end_mapper = vtk.vtkPolyDataMapper()
+        end_mapper.SetInputData(sphere.GetOutput())
+        end_actor = vtk.vtkActor()
+        end_actor.SetMapper(end_mapper)
+        end_actor.SetPosition(x[-1], y[-1], z[-1])
+        end_actor.GetProperty().SetColor(1, 0, 0)  # Red for end
+        
         # Add a color bar
         scalar_bar = vtk.vtkScalarBarActor()
-        scalar_bar.SetLookupTable(points_mapper.GetLookupTable())
+        scalar_bar.SetLookupTable(tube_mapper.GetLookupTable())
         scalar_bar.SetTitle("Cell Values")
         scalar_bar.SetNumberOfLabels(5)
         scalar_bar.SetPosition(0.8, 0.1)
@@ -692,7 +766,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.renderer.AddActor2D(scalar_bar)
         self.actors.append(scalar_bar)
         
-        return [points_actor, tube_actor]
+        return [tube_actor, start_actor, end_actor]
     
     def visualize_mat_file(self, file_path):
         """Visualize data from a .mat file"""
@@ -701,87 +775,130 @@ class PhysiCellVTKQtViewer(QMainWindow):
             
             if mat_contents is None:
                 return False
+            
+            # Print the entire content of the cells.mat file
+            print("\n==== Contents of cells.mat file ====")
+            for key, value in mat_contents.items():
+                print(f"Key: {key}")
+                print(f"Type: {type(value)}")
+                print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
+                if isinstance(value, np.ndarray) and value.size < 20:  # Only print small arrays fully
+                    # Format array elements as fixed-point notation
+                    if np.issubdtype(value.dtype, np.number):
+                        value_str = np.array2string(value, precision=6, suppress_small=True, formatter={'float_kind': lambda x: f"{x:.6f}"})
+                        print(f"Content: {value_str}")
+                    else:
+                        print(f"Content: {value}")
+                else:
+                    print(f"Content: {type(value)} (too large to display)")
+                print("-" * 50)
                 
             # Check for cells data
             if 'cells' in mat_contents:
                 cells_data = mat_contents['cells']
                 
-                # Handle scalar values case (most common for PhysiCell outputs)
+                # Handle scalar values case (single column)
                 if cells_data.shape[1] == 1 and isinstance(cells_data[0, 0], (float, int, np.float64, np.int64)):
                     values = cells_data.flatten()
                     
-                    # Create a spiral visualization
-                    actors = self.create_spiral_viz_from_values(values)
-                    
-                    # Add actors to the renderer
-                    for actor in actors:
-                        self.renderer.AddActor(actor)
-                        self.actors.append(actor)
-                    
-                    # Add info text
-                    min_val = values.min()
-                    max_val = values.max()
-                    text_actor = vtk.vtkTextActor()
-                    text_actor.SetInput(f"Cell data: {len(values)} values, range [{min_val:.2f}, {max_val:.2f}]")
-                    text_actor.GetTextProperty().SetFontSize(16)
-                    text_actor.GetTextProperty().SetColor(1, 1, 0)
-                    text_actor.SetPosition(20, 30)
-                    self.renderer.AddActor2D(text_actor)
-                    self.actors.append(text_actor)
-                    
-                    return True
-                elif cells_data.shape[1] >= 4:  # Matrix with at least 4 columns (x,y,z,value)
-                    x_data = cells_data[:, 0]
-                    y_data = cells_data[:, 1]
-                    z_data = cells_data[:, 2]
-                    scalar_data = cells_data[:, 3]
-                    
-                    # Create points for visualization
+                    # Create spheres for cells instead of a spiral
                     points = vtk.vtkPoints()
-                    for i in range(len(x_data)):
-                        points.InsertNextPoint(x_data[i], y_data[i], z_data[i])
                     
-                    # Create a polydata
+                    # Get number of cells
+                    num_cells = len(values)
+                    
+                    # Evenly distribute cells in a grid pattern
+                    grid_size = int(np.ceil(np.cbrt(num_cells)))  # Cubed root to get a 3D grid
+                    spacing = 20  # Distance between cells
+                    
+                    # Create a polydata with points
                     polydata = vtk.vtkPolyData()
                     polydata.SetPoints(points)
                     
-                    # Add scalar values
-                    scalars = vtk.vtkFloatArray()
-                    scalars.SetNumberOfComponents(1)
-                    scalars.SetName("Values")
-                    for value in scalar_data:
-                        scalars.InsertNextValue(value)
-                    polydata.GetPointData().SetScalars(scalars)
+                    # Create vertex cells (to ensure points are rendered)
+                    vertex_cells = vtk.vtkCellArray()
                     
-                    # Create a delaunay 3D filter
-                    delaunay = vtk.vtkDelaunay3D()
-                    delaunay.SetInputData(polydata)
-                    delaunay.SetTolerance(0.01)
-                    delaunay.Update()
+                    # Create color array based on cell values
+                    colors = vtk.vtkFloatArray()
+                    colors.SetNumberOfComponents(1)
+                    colors.SetName("CellValues")
                     
-                    # Create a mapper
-                    mapper = vtk.vtkDataSetMapper()
-                    mapper.SetInputConnection(delaunay.GetOutputPort())
-                    mapper.SetScalarRange(scalar_data.min(), scalar_data.max())
+                    # Distribute cells in a 3D grid
+                    idx = 0
+                    for i in range(grid_size):
+                        for j in range(grid_size):
+                            for k in range(grid_size):
+                                if idx < num_cells:
+                                    # Add point
+                                    x = i * spacing
+                                    y = j * spacing
+                                    z = k * spacing
+                                    points.InsertNextPoint(x, y, z)
+                                    
+                                    # Add vertex cell
+                                    vertex = vtk.vtkVertex()
+                                    vertex.GetPointIds().SetId(0, idx)
+                                    vertex_cells.InsertNextCell(vertex)
+                                    
+                                    # Add scalar value for color
+                                    colors.InsertNextValue(values[idx])
+                                    
+                                    idx += 1
                     
-                    # Create an actor
+                    # Assign cells to polydata
+                    polydata.SetVerts(vertex_cells)
+                    
+                    # Add color data
+                    polydata.GetPointData().SetScalars(colors)
+                    
+                    # Create a glyph (sphere) for each point
+                    sphere = vtk.vtkSphereSource()
+                    sphere.SetRadius(5.0 / 1000.0)  # Make cells 1000 times smaller
+                    sphere.SetPhiResolution(16)
+                    sphere.SetThetaResolution(16)
+                    
+                    # Create the glyph filter
+                    glyph = vtk.vtkGlyph3D()
+                    glyph.SetInputData(polydata)
+                    glyph.SetSourceConnection(sphere.GetOutputPort())
+                    glyph.SetScaleModeToScaleByScalar()
+                    glyph.SetScaleFactor(1.0)
+                    glyph.SetColorModeToColorByScalar()
+                    glyph.Update()
+                    
+                    # Create mapper and actor
+                    mapper = vtk.vtkPolyDataMapper()
+                    mapper.SetInputConnection(glyph.GetOutputPort())
+                    mapper.SetScalarRange(values.min(), values.max())
+                    
                     actor = vtk.vtkActor()
                     actor.SetMapper(mapper)
-                    actor.GetProperty().SetOpacity(0.7)
                     
-                    # Add the actor
+                    # Add the actor to the renderer
                     self.renderer.AddActor(actor)
                     self.actors.append(actor)
                     
                     # Add a color bar
                     scalar_bar = vtk.vtkScalarBarActor()
                     scalar_bar.SetLookupTable(mapper.GetLookupTable())
-                    scalar_bar.SetTitle("Values")
+                    scalar_bar.SetTitle("Cell Values")
+                    scalar_bar.SetNumberOfLabels(5)
                     scalar_bar.SetPosition(0.8, 0.1)
                     scalar_bar.SetWidth(0.1)
                     scalar_bar.SetHeight(0.8)
                     self.renderer.AddActor2D(scalar_bar)
                     self.actors.append(scalar_bar)
+                    
+                    # Add info text
+                    min_val = values.min()
+                    max_val = values.max()
+                    text_actor = vtk.vtkTextActor()
+                    text_actor.SetInput(f"Cell data: {len(values)} cells, values range [{min_val:.2f}, {max_val:.2f}]")
+                    text_actor.GetTextProperty().SetFontSize(16)
+                    text_actor.GetTextProperty().SetColor(1, 1, 0)
+                    text_actor.SetPosition(20, 30)
+                    self.renderer.AddActor2D(text_actor)
+                    self.actors.append(text_actor)
                     
                     return True
             
@@ -821,9 +938,9 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     z = microenv_data[2, :].flatten()  # z coordinates
                     
                     # Print coordinate information for debugging
-                    print(f"X range: {x.min()} to {x.max()}, shape: {x.shape}")
-                    print(f"Y range: {y.min()} to {y.max()}, shape: {y.shape}")
-                    print(f"Z range: {z.min()} to {z.max()}, shape: {z.shape}")
+                    print(f"X range: {x.min():.6f} to {x.max():.6f}, shape: {x.shape}")
+                    print(f"Y range: {y.min():.6f} to {y.max():.6f}, shape: {y.shape}")
+                    print(f"Z range: {z.min():.6f} to {z.max():.6f}, shape: {z.shape}")
                     
                     # Number of substrates (chemical species)
                     substrate_count = microenv_data.shape[0] - 4
@@ -872,7 +989,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
                         substrate_data = microenv_data[4 + substrate_idx, :]
                         
                         # Print substrate range for debugging
-                        print(f"Substrate {substrate_idx} range: {substrate_data.min()} to {substrate_data.max()}")
+                        print(f"Substrate {substrate_idx} range: {substrate_data.min():.6f} to {substrate_data.max():.6f}")
                         
                         # Create the scalar array for this substrate
                         substrate_vtk = vtk.vtkDoubleArray()
@@ -978,6 +1095,36 @@ class PhysiCellVTKQtViewer(QMainWindow):
                         volume_property.SetScalarOpacity(otf)
                         volume_property.ShadeOn()
                         volume_property.SetInterpolationTypeToLinear()
+                        
+                        # Set wireframe mode based on checkbox
+                        if self.microenv_wireframe_cb.isChecked():
+                            # Use edges to create wireframe effect
+                            outline_filter = vtk.vtkOutlineFilter()
+                            outline_filter.SetInputData(grid)
+                            outline_mapper = vtk.vtkPolyDataMapper()
+                            outline_mapper.SetInputConnection(outline_filter.GetOutputPort())
+                            outline_actor = vtk.vtkActor()
+                            outline_actor.SetMapper(outline_mapper)
+                            outline_actor.GetProperty().SetColor(1, 1, 1)  # White wireframe
+                            self.renderer.AddActor(outline_actor)
+                            self.actors.append(outline_actor)
+                            
+                            # Also add visible grid lines
+                            grid_filter = vtk.vtkStructuredGridOutlineFilter()
+                            grid_filter.SetInputData(grid)
+                            grid_mapper = vtk.vtkPolyDataMapper()
+                            grid_mapper.SetInputConnection(grid_filter.GetOutputPort())
+                            grid_actor = vtk.vtkActor()
+                            grid_actor.SetMapper(grid_mapper)
+                            grid_actor.GetProperty().SetColor(0.7, 0.7, 0.7)  # Light grey grid
+                            self.renderer.AddActor(grid_actor)
+                            self.actors.append(grid_actor)
+                            
+                            # Make volume more transparent in wireframe mode
+                            for i in range(otf.GetSize()):
+                                val = otf.GetDataPointer()[i*2]
+                                opacity = otf.GetValue(val) * 0.3  # Reduce opacity
+                                otf.AddPoint(val, opacity)
                         
                         # Create the volume
                         volume = vtk.vtkVolume()
@@ -1108,7 +1255,7 @@ def main():
             window.prev_btn.setEnabled(True)
             window.next_btn.setEnabled(True)
             window.play_btn.setEnabled(True)
-            window.show_cells_cb.setEnabled(True)
+            window.microenv_wireframe_cb.setEnabled(True)
             window.show_mat_cb.setEnabled(True)
             window.show_microenv_cb.setEnabled(True)
             window.cell_opacity_slider.setEnabled(True)
