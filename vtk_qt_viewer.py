@@ -635,7 +635,20 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 print(f"Key: {key}")
                 print(f"Type: {type(value)}")
                 print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
-                if isinstance(value, np.ndarray) and value.size < 20:  # Only print small arrays fully
+                
+                # Always display full content of 'cells' array regardless of size
+                if key == 'cells' and isinstance(value, np.ndarray):
+                    # Format array elements as fixed-point notation
+                    if np.issubdtype(value.dtype, np.number):
+                        # Set a large threshold to ensure all elements are displayed
+                        np.set_printoptions(threshold=np.inf, precision=6, suppress=True)
+                        print("Content of cells array:")
+                        print(value)
+                        # Reset print options to default
+                        np.set_printoptions(threshold=1000)
+                    else:
+                        print(f"Content: {value}")
+                elif isinstance(value, np.ndarray) and value.size < 20:  # Only print small arrays fully
                     # Format array elements as fixed-point notation
                     if np.issubdtype(value.dtype, np.number):
                         value_str = np.array2string(value, precision=6, suppress_small=True, formatter={'float_kind': lambda x: f"{x:.6f}"})
@@ -776,139 +789,167 @@ class PhysiCellVTKQtViewer(QMainWindow):
             if mat_contents is None:
                 return False
             
-            # Print the entire content of the cells.mat file
-            print("\n==== Contents of cells.mat file ====")
-            for key, value in mat_contents.items():
-                print(f"Key: {key}")
-                print(f"Type: {type(value)}")
-                print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
-                if isinstance(value, np.ndarray) and value.size < 20:  # Only print small arrays fully
-                    # Format array elements as fixed-point notation
-                    if np.issubdtype(value.dtype, np.number):
-                        value_str = np.array2string(value, precision=6, suppress_small=True, formatter={'float_kind': lambda x: f"{x:.6f}"})
-                        print(f"Content: {value_str}")
-                    else:
-                        print(f"Content: {value}")
-                else:
-                    print(f"Content: {type(value)} (too large to display)")
-                print("-" * 50)
-                
             # Check for cells data
             if 'cells' in mat_contents:
                 cells_data = mat_contents['cells']
                 
-                # Handle scalar values case (single column)
-                if cells_data.shape[1] == 1 and isinstance(cells_data[0, 0], (float, int, np.float64, np.int64)):
-                    values = cells_data.flatten()
+                # Print detailed information about the cells data structure
+                print("\n==== PhysiCell Cell Data Structure Analysis ====")
+                print(f"Shape of cells array: {cells_data.shape}")
+                
+                # Handle the case where cells_data is an array with 87 elements (single cell)
+                if cells_data.shape[1] == 1 and cells_data.shape[0] >= 80:
+                    print("Detected PhysiCell single cell format (87 properties)")
                     
-                    # Create spheres for cells instead of a spiral
-                    points = vtk.vtkPoints()
+                    # PhysiCell cells.mat format (based on PhysiCell-Studio interpretation)
+                    # Extract cell position (typically stored at indices 1, 2, 3)
+                    # These indices may need adjustment based on actual PhysiCell format
+                    x = float(cells_data[1, 0])
+                    y = float(cells_data[2, 0])
+                    z = float(cells_data[3, 0])
                     
-                    # Get number of cells
-                    num_cells = len(values)
+                    # Extract cell radius (convert from volume if needed)
+                    # In PhysiCell, cell volume is often stored, and radius is calculated
+                    volume = float(cells_data[4, 0])  # Assuming volume is at index 4
+                    radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0/3.0)
                     
-                    # Evenly distribute cells in a grid pattern
-                    grid_size = int(np.ceil(np.cbrt(num_cells)))  # Cubed root to get a 3D grid
-                    spacing = 20  # Distance between cells
+                    # Cell type (in PhysiCell often an integer code)
+                    cell_type = 1  # Default type if not specified
+                    if cells_data.shape[0] > 5:
+                        cell_type = int(cells_data[5, 0])  # Assuming type is at index 5
                     
-                    # Create a polydata with points
-                    polydata = vtk.vtkPolyData()
-                    polydata.SetPoints(points)
+                    print(f"Cell position: ({x:.6f}, {y:.6f}, {z:.6f})")
+                    print(f"Cell radius: {radius:.6f}")
+                    print(f"Cell type: {cell_type}")
                     
-                    # Create vertex cells (to ensure points are rendered)
-                    vertex_cells = vtk.vtkCellArray()
-                    
-                    # Create color array based on cell values
-                    colors = vtk.vtkFloatArray()
-                    colors.SetNumberOfComponents(1)
-                    colors.SetName("CellValues")
-                    
-                    # Distribute cells in a 3D grid
-                    idx = 0
-                    for i in range(grid_size):
-                        for j in range(grid_size):
-                            for k in range(grid_size):
-                                if idx < num_cells:
-                                    # Add point
-                                    x = i * spacing
-                                    y = j * spacing
-                                    z = k * spacing
-                                    points.InsertNextPoint(x, y, z)
-                                    
-                                    # Add vertex cell
-                                    vertex = vtk.vtkVertex()
-                                    vertex.GetPointIds().SetId(0, idx)
-                                    vertex_cells.InsertNextCell(vertex)
-                                    
-                                    # Add scalar value for color
-                                    colors.InsertNextValue(values[idx])
-                                    
-                                    idx += 1
-                    
-                    # Assign cells to polydata
-                    polydata.SetVerts(vertex_cells)
-                    
-                    # Add color data
-                    polydata.GetPointData().SetScalars(colors)
-                    
-                    # Create a glyph (sphere) for each point
+                    # Create a sphere for the cell
                     sphere = vtk.vtkSphereSource()
-                    sphere.SetRadius(5.0 / 1000.0)  # Make cells 1000 times smaller
+                    sphere.SetCenter(x, y, z)
+                    sphere.SetRadius(radius)  # Maintain the 1000x smaller scale
                     sphere.SetPhiResolution(16)
                     sphere.SetThetaResolution(16)
+                    sphere.Update()
                     
-                    # Create the glyph filter
-                    glyph = vtk.vtkGlyph3D()
-                    glyph.SetInputData(polydata)
-                    glyph.SetSourceConnection(sphere.GetOutputPort())
-                    glyph.SetScaleModeToScaleByScalar()
-                    glyph.SetScaleFactor(1.0)
-                    glyph.SetColorModeToColorByScalar()
-                    glyph.Update()
-                    
-                    # Create mapper and actor
+                    # Create a mapper
                     mapper = vtk.vtkPolyDataMapper()
-                    mapper.SetInputConnection(glyph.GetOutputPort())
-                    mapper.SetScalarRange(values.min(), values.max())
+                    mapper.SetInputConnection(sphere.GetOutputPort())
                     
+                    # Create an actor
                     actor = vtk.vtkActor()
                     actor.SetMapper(mapper)
+                    
+                    # Set color based on cell type
+                    colors = {
+                        0: (0.7, 0.7, 0.7),  # Grey
+                        1: (1.0, 0.0, 0.0),  # Red
+                        2: (0.0, 1.0, 0.0),  # Green
+                        3: (0.0, 0.0, 1.0),  # Blue
+                        4: (1.0, 1.0, 0.0),  # Yellow
+                        5: (1.0, 0.0, 1.0),  # Magenta
+                        6: (0.0, 1.0, 1.0),  # Cyan
+                    }
+                    color = colors.get(cell_type, (0.7, 0.7, 0.7))  # Default to grey
+                    actor.GetProperty().SetColor(color)
+                    
+                    # Set opacity
+                    opacity = self.cell_opacity_slider.value() / 100.0
+                    actor.GetProperty().SetOpacity(opacity)
                     
                     # Add the actor to the renderer
                     self.renderer.AddActor(actor)
                     self.actors.append(actor)
                     
-                    # Add a color bar
-                    scalar_bar = vtk.vtkScalarBarActor()
-                    scalar_bar.SetLookupTable(mapper.GetLookupTable())
-                    scalar_bar.SetTitle("Cell Values")
-                    scalar_bar.SetNumberOfLabels(5)
-                    scalar_bar.SetPosition(0.8, 0.1)
-                    scalar_bar.SetWidth(0.1)
-                    scalar_bar.SetHeight(0.8)
-                    self.renderer.AddActor2D(scalar_bar)
-                    self.actors.append(scalar_bar)
+                    # Add info text about the cell
+                    text_actor = vtk.vtkTextActor()
+                    text_actor.SetInput(f"Single cell at ({x:.2f}, {y:.2f}, {z:.2f})\nRadius: {radius:.2f}, Type: {cell_type}")
+                    text_actor.GetTextProperty().SetFontSize(16)
+                    text_actor.GetTextProperty().SetColor(1, 1, 0)  # Yellow text
+                    text_actor.SetPosition(20, 30)
+                    self.renderer.AddActor2D(text_actor)
+                    self.actors.append(text_actor)
+                    
+                    # Add description of all 87 properties (if available)
+                    props_text = "Cell Properties:\n"
+                    # This is just an example, actual property meanings would need to be verified
+                    property_names = [
+                        "ID", "x", "y", "z", "volume", "type", 
+                        "cycle_model", "cycle_state", "elapsed_time", "nuclear_volume",
+                        "cytoplasmic_volume", "fluid_fraction", "calcified_fraction", "orientation_x", 
+                        "orientation_y", "orientation_z"
+                    ]
+                    
+                    # Add actual values for first 16 properties (or fewer if not available)
+                    for i, name in enumerate(property_names):
+                        if i < cells_data.shape[0]:
+                            props_text += f"{name}: {cells_data[i, 0]:.4f}\n"
+                    
+                    props_actor = vtk.vtkTextActor()
+                    props_actor.SetInput(props_text)
+                    props_actor.GetTextProperty().SetFontSize(12)
+                    props_actor.GetTextProperty().SetColor(1, 1, 1)  # White text
+                    props_actor.SetPosition(20, 400)
+                    self.renderer.AddActor2D(props_actor)
+                    self.actors.append(props_actor)
+                    
+                    return True
+                
+                # Handle scalar values case (single column, but not 87 elements format)
+                elif cells_data.shape[1] == 1 and isinstance(cells_data[0, 0], (float, int, np.float64, np.int64)):
+                    values = cells_data.flatten()
+                    print("Detected simple scalar values array, not PhysiCell cell format")
+                    
+                    # Create a spiral visualization for the values
+                    spiral_actors = self.create_spiral_viz_from_values(values)
+                    for actor in spiral_actors:
+                        self.renderer.AddActor(actor)
+                        self.actors.append(actor)
                     
                     # Add info text
-                    min_val = values.min()
-                    max_val = values.max()
                     text_actor = vtk.vtkTextActor()
-                    text_actor.SetInput(f"Cell data: {len(values)} cells, values range [{min_val:.2f}, {max_val:.2f}]")
+                    text_actor.SetInput(f"Scalar values visualization\nNumber of values: {len(values)}")
                     text_actor.GetTextProperty().SetFontSize(16)
-                    text_actor.GetTextProperty().SetColor(1, 1, 0)
+                    text_actor.GetTextProperty().SetColor(1, 1, 0)  # Yellow
+                    text_actor.SetPosition(20, 30)
+                    self.renderer.AddActor2D(text_actor)
+                    self.actors.append(text_actor)
+                    
+                    return True
+                
+                # Handle other cases where cells data might have multiple columns
+                else:
+                    # This case is for more complex cell data structures
+                    # For now, just show a message and return
+                    print(f"Complex cell data structure detected: {cells_data.shape}")
+                    
+                    # Add info text
+                    text_actor = vtk.vtkTextActor()
+                    text_actor.SetInput(f"Complex cell data structure\nShape: {cells_data.shape}")
+                    text_actor.GetTextProperty().SetFontSize(16)
+                    text_actor.GetTextProperty().SetColor(1, 1, 0)  # Yellow
                     text_actor.SetPosition(20, 30)
                     self.renderer.AddActor2D(text_actor)
                     self.actors.append(text_actor)
                     
                     return True
             
-            # If we get here, we couldn't visualize the .mat file
+            # If we got here, no valid data was found to visualize
             return False
-            
+        
         except Exception as e:
-            print(f"Error visualizing .mat file: {e}")
+            # Error handling for visualization issues
+            print(f"Error visualizing MAT file: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Add error message to the visualization
+            text_actor = vtk.vtkTextActor()
+            text_actor.SetInput(f"Error visualizing file:\n{str(e)}")
+            text_actor.GetTextProperty().SetFontSize(16)
+            text_actor.GetTextProperty().SetColor(1, 0, 0)  # Red text for errors
+            text_actor.SetPosition(20, 30)
+            self.renderer.AddActor2D(text_actor)
+            self.actors.append(text_actor)
+            
             return False
     
     def visualize_microenvironment(self, file_path):
@@ -1110,7 +1151,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
                             self.actors.append(outline_actor)
                             
                             # Also add visible grid lines
-                            grid_filter = vtk.vtkStructuredGridOutlineFilter()
+                            grid_filter = vtk.vtkRectilinearGridOutlineFilter()
                             grid_filter.SetInputData(grid)
                             grid_mapper = vtk.vtkPolyDataMapper()
                             grid_mapper.SetInputConnection(grid_filter.GetOutputPort())
