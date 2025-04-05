@@ -224,20 +224,73 @@ class PhysiCellVTKQtViewer(QMainWindow):
         # Get the render window
         self.render_window = self.vtk_widget.GetRenderWindow()
         
+        # Enable anti-aliasing for smoother rendering
+        self.render_window.SetMultiSamples(4)
+        
+        # Set rendering quality settings
+        self.render_window.SetDesiredUpdateRate(30.0)  # Higher update rate during interaction
+        
         # Create a renderer
         self.renderer = vtk.vtkRenderer()
         self.renderer.SetBackground(0.1, 0.2, 0.3)  # Dark blue background
+        
+        # Enable two-sided lighting for better visuals
+        self.renderer.SetTwoSidedLighting(True)
+        
+        # Set rendering quality
+        self.renderer.SetUseDepthPeeling(1)  # Better transparency handling
+        self.renderer.SetMaximumNumberOfPeels(8)
+        self.renderer.SetOcclusionRatio(0.0)
+        
         self.render_window.AddRenderer(self.renderer)
         
         # Set up the interactor
         self.interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
         
-        # Set interactor style for smooth interaction
-        interactor_style = vtk.vtkInteractorStyleTrackballCamera()
+        # Create a custom interactor style for faster zooming
+        class FastZoomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
+            def __init__(self):
+                super().__init__()
+                self.zoom_factor = 0.2  # Default zoom factor (larger = faster zoom)
+                
+            def SetZoomFactor(self, factor):
+                self.zoom_factor = factor
+                
+            def MouseWheelForwardEvent(self, obj, event):
+                # Override default zoom to make it faster
+                factor = self.zoom_factor * 4.0  # 4x faster than default
+                self.GetCurrentRenderer().GetActiveCamera().Dolly(1.0 + factor)
+                self.GetCurrentRenderer().ResetCameraClippingRange()
+                self.GetInteractor().Render()
+                
+            def MouseWheelBackwardEvent(self, obj, event):
+                # Override default zoom to make it faster
+                factor = self.zoom_factor * 4.0  # 4x faster than default
+                self.GetCurrentRenderer().GetActiveCamera().Dolly(1.0 - factor)
+                self.GetCurrentRenderer().ResetCameraClippingRange()
+                self.GetInteractor().Render()
+        
+        # Set the custom interactor style
+        interactor_style = FastZoomInteractorStyle()
+        interactor_style.SetZoomFactor(0.2)  # Set zoom factor (0.1 = slow, 0.5 = fast)
+        interactor_style.SetMotionFactor(10.0)  # Faster motion
+        
         self.interactor.SetInteractorStyle(interactor_style)
+        
+        # Configure the interactor for improved performance
+        self.interactor.SetDesiredUpdateRate(30.0)  # Higher update rate during interaction
+        self.interactor.SetStillUpdateRate(0.01)    # Lower update rate when not interacting
+        
+        # Add custom observers for interaction events
+        self.interactor.AddObserver("StartInteractionEvent", self.on_interaction_start)
+        self.interactor.AddObserver("EndInteractionEvent", self.on_interaction_end)
         
         # Add orientation axes
         self.add_orientation_axes()
+        
+        # Setup camera for better zooming
+        camera = self.renderer.GetActiveCamera()
+        camera.SetClippingRange(0.1, 10000)  # Wide clipping range
         
         # Initialize the interactor
         self.interactor.Initialize()
@@ -246,6 +299,9 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.animation_timer = QTimer()
         self.animation_timer.timeout.connect(self.animation_step)
         self.animation_active = False
+        
+        # Track actor properties for LOD during interaction
+        self.actor_properties = {}  # Store original properties
     
     def add_orientation_axes(self):
         """Add orientation axes to the renderer"""
@@ -543,9 +599,9 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 # Create sphere for this cell
                 sphere_source = vtk.vtkSphereSource()
                 sphere_source.SetCenter(x, y, z)
-                sphere_source.SetRadius(radius / 1000.0)  # Make cells 1000 times smaller
-                sphere_source.SetPhiResolution(8)  # Lower resolution for better performance
-                sphere_source.SetThetaResolution(8)
+                sphere_source.SetRadius(radius)  # Use actual radius without scaling down
+                sphere_source.SetPhiResolution(16)
+                sphere_source.SetThetaResolution(16)
                 sphere_source.Update()
                 
                 # Get polydata from the sphere source
@@ -825,7 +881,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     # Create a sphere for the cell
                     sphere = vtk.vtkSphereSource()
                     sphere.SetCenter(x, y, z)
-                    sphere.SetRadius(radius)  # Maintain the 1000x smaller scale
+                    sphere.SetRadius(radius)  # Use actual radius without scaling down
                     sphere.SetPhiResolution(16)
                     sphere.SetThetaResolution(16)
                     sphere.Update()
@@ -1257,6 +1313,67 @@ class PhysiCellVTKQtViewer(QMainWindow):
         else:
             # Loop back to the start
             self.frame_slider.setValue(0)
+    
+    def on_interaction_start(self, obj, event):
+        """Reduce rendering quality during interaction for better performance"""
+        # Store original resolution of spheres to restore later
+        for actor in self.actors:
+            if isinstance(actor, vtk.vtkActor) and actor.GetMapper() and actor.GetMapper().GetInput():
+                # For sphere sources, reduce resolution during interaction
+                if hasattr(actor, 'original_resolution'):
+                    continue  # Already stored
+                
+                mapper = actor.GetMapper()
+                if hasattr(mapper, 'GetInputAlgorithm'):
+                    alg = mapper.GetInputAlgorithm()
+                    if alg and isinstance(alg, vtk.vtkSphereSource):
+                        # Store original resolution
+                        actor.original_resolution = (alg.GetPhiResolution(), alg.GetThetaResolution())
+                        # Reduce resolution for faster rendering
+                        alg.SetPhiResolution(6)
+                        alg.SetThetaResolution(6)
+                        alg.Update()
+        
+        # Reduce sample distance for volume rendering during interaction
+        for actor in self.actors:
+            if isinstance(actor, vtk.vtkVolume) and actor.GetMapper():
+                mapper = actor.GetMapper()
+                if not hasattr(actor, 'original_sample_distance'):
+                    if hasattr(mapper, 'GetSampleDistance'):
+                        actor.original_sample_distance = mapper.GetSampleDistance()
+                        # Double the sample distance during interaction (less quality, faster rendering)
+                        mapper.SetSampleDistance(actor.original_sample_distance * 2.0)
+        
+        # Force render window to use faster algorithms during interaction
+        self.render_window.SetDesiredUpdateRate(30.0)
+    
+    def on_interaction_end(self, obj, event):
+        """Restore full rendering quality after interaction is complete"""
+        # Restore original sphere resolution
+        for actor in self.actors:
+            if isinstance(actor, vtk.vtkActor) and actor.GetMapper() and hasattr(actor, 'original_resolution'):
+                mapper = actor.GetMapper()
+                if hasattr(mapper, 'GetInputAlgorithm'):
+                    alg = mapper.GetInputAlgorithm()
+                    if alg and isinstance(alg, vtk.vtkSphereSource):
+                        # Restore original resolution
+                        phi, theta = actor.original_resolution
+                        alg.SetPhiResolution(phi)
+                        alg.SetThetaResolution(theta)
+                        alg.Update()
+        
+        # Restore original sample distance for volume rendering
+        for actor in self.actors:
+            if isinstance(actor, vtk.vtkVolume) and actor.GetMapper() and hasattr(actor, 'original_sample_distance'):
+                mapper = actor.GetMapper()
+                if hasattr(mapper, 'SetSampleDistance'):
+                    mapper.SetSampleDistance(actor.original_sample_distance)
+        
+        # Return to high quality rendering for still images
+        self.render_window.SetDesiredUpdateRate(0.0001)
+        
+        # Force a high-quality render
+        self.render_window.Render()
     
     def closeEvent(self, event):
         """Handle window close event"""
