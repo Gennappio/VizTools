@@ -10,6 +10,8 @@ This application provides a user-friendly interface for visualizing PhysiCell ou
 
 Usage:
   python vtk_qt_viewer.py
+  python vtk_qt_viewer.py -f /path/to/output_folder
+  python vtk_qt_viewer.py -f /path/to/output_folder -debug
 """
 
 import os
@@ -32,15 +34,20 @@ try:
     # Try to import pyMCDS if available (for loading PhysiCell data)
     from pyMCDS_cells import pyMCDS_cells
 except ImportError:
-    print("Warning: pyMCDS_cells module not found. XML visualization will be limited.")
     pyMCDS_cells = None
+
+# Global debug flag
+DEBUG = False
 
 class PhysiCellVTKQtViewer(QMainWindow):
     """Qt-based GUI application for PhysiCell VTK visualization"""
     
-    def __init__(self, initial_dir=None):
+    def __init__(self, initial_dir=None, debug=False):
         """Initialize the application window and UI components"""
         super().__init__()
+        
+        # Store debug setting
+        self.debug = debug
         
         # Application state
         self.output_dir = ""
@@ -513,11 +520,12 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 positions_z = np.zeros_like(positions_x)
             
             # Print cell bounds information from XML
-            print("\n==== Cell Bounds from XML ====")
-            print(f"X range: {positions_x.min():.6f} to {positions_x.max():.6f}")
-            print(f"Y range: {positions_y.min():.6f} to {positions_y.max():.6f}")
-            print(f"Z range: {positions_z.min():.6f} to {positions_z.max():.6f}")
-            print(f"Number of cells: {len(positions_x)}")
+            if self.debug:
+                print("\n==== Cell Bounds from XML ====")
+                print(f"X range: {positions_x.min():.6f} to {positions_x.max():.6f}")
+                print(f"Y range: {positions_y.min():.6f} to {positions_y.max():.6f}")
+                print(f"Z range: {positions_z.min():.6f} to {positions_z.max():.6f}")
+                print(f"Number of cells: {len(positions_x)}")
             
             # Try to get microenvironment data bounds for comparison
             try:
@@ -533,28 +541,30 @@ class PhysiCellVTKQtViewer(QMainWindow):
                         micro_z = microenv_data[2, :].flatten()
                         
                         # Print microenvironment bounds
-                        print("\n==== Microenvironment Bounds ====")
-                        print(f"X range: {micro_x.min():.6f} to {micro_x.max():.6f}")
-                        print(f"Y range: {micro_y.min():.6f} to {micro_y.max():.6f}")
-                        print(f"Z range: {micro_z.min():.6f} to {micro_z.max():.6f}")
-                        
-                        # Calculate bounds differences
-                        x_diff_min = positions_x.min() - micro_x.min()
-                        x_diff_max = micro_x.max() - positions_x.max()
-                        y_diff_min = positions_y.min() - micro_y.min()
-                        y_diff_max = micro_y.max() - positions_y.max()
-                        z_diff_min = positions_z.min() - micro_z.min()
-                        z_diff_max = micro_z.max() - positions_z.max()
-                        
-                        print("\n==== Bounds Differences (positive means cells are inside) ====")
-                        print(f"X min difference: {x_diff_min:.6f}")
-                        print(f"X max difference: {x_diff_max:.6f}")
-                        print(f"Y min difference: {y_diff_min:.6f}")
-                        print(f"Y max difference: {y_diff_max:.6f}")
-                        print(f"Z min difference: {z_diff_min:.6f}")
-                        print(f"Z max difference: {z_diff_max:.6f}")
+                        if self.debug:
+                            print("\n==== Microenvironment Bounds ====")
+                            print(f"X range: {micro_x.min():.6f} to {micro_x.max():.6f}")
+                            print(f"Y range: {micro_y.min():.6f} to {micro_y.max():.6f}")
+                            print(f"Z range: {micro_z.min():.6f} to {micro_z.max():.6f}")
+                            
+                            # Calculate bounds differences
+                            x_diff_min = positions_x.min() - micro_x.min()
+                            x_diff_max = micro_x.max() - positions_x.max()
+                            y_diff_min = positions_y.min() - micro_y.min()
+                            y_diff_max = micro_y.max() - positions_y.max()
+                            z_diff_min = positions_z.min() - micro_z.min()
+                            z_diff_max = micro_z.max() - positions_z.max()
+                            
+                            print("\n==== Bounds Differences (positive means cells are inside) ====")
+                            print(f"X min difference: {x_diff_min:.6f}")
+                            print(f"X max difference: {x_diff_max:.6f}")
+                            print(f"Y min difference: {y_diff_min:.6f}")
+                            print(f"Y max difference: {y_diff_max:.6f}")
+                            print(f"Z min difference: {z_diff_min:.6f}")
+                            print(f"Z max difference: {z_diff_max:.6f}")
             except Exception as e:
-                print(f"Error comparing with microenvironment: {e}")
+                if self.debug:
+                    print(f"Error comparing with microenvironment: {e}")
             
             # Calculate radii
             cell_vols = cell_df['total_volume'].values
@@ -667,7 +677,8 @@ class PhysiCellVTKQtViewer(QMainWindow):
             return True
             
         except Exception as e:
-            print(f"Error visualizing XML file: {e}")
+            if self.debug:
+                print(f"Error visualizing XML file: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -686,39 +697,41 @@ class PhysiCellVTKQtViewer(QMainWindow):
                            if not k.startswith('__')}
             
             # Print the entire content of the cells.mat file
-            print("\n==== Contents of cells.mat file ====")
-            for key, value in mat_contents.items():
-                print(f"Key: {key}")
-                print(f"Type: {type(value)}")
-                print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
-                
-                # Always display full content of 'cells' array regardless of size
-                if key == 'cells' and isinstance(value, np.ndarray):
-                    # Format array elements as fixed-point notation
-                    if np.issubdtype(value.dtype, np.number):
-                        # Set a large threshold to ensure all elements are displayed
-                        np.set_printoptions(threshold=np.inf, precision=6, suppress=True)
-                        print("Content of cells array:")
-                        print(value)
-                        # Reset print options to default
-                        np.set_printoptions(threshold=1000)
+            if self.debug:
+                print("\n==== Contents of cells.mat file ====")
+                for key, value in mat_contents.items():
+                    print(f"Key: {key}")
+                    print(f"Type: {type(value)}")
+                    print(f"Shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
+                    
+                    # Always display full content of 'cells' array regardless of size
+                    if key == 'cells' and isinstance(value, np.ndarray):
+                        # Format array elements as fixed-point notation
+                        if np.issubdtype(value.dtype, np.number):
+                            # Set a large threshold to ensure all elements are displayed
+                            np.set_printoptions(threshold=np.inf, precision=6, suppress=True)
+                            print("Content of cells array:")
+                            print(value)
+                            # Reset print options to default
+                            np.set_printoptions(threshold=1000)
+                        else:
+                            print(f"Content: {value}")
+                    elif isinstance(value, np.ndarray) and value.size < 20:  # Only print small arrays fully
+                        # Format array elements as fixed-point notation
+                        if np.issubdtype(value.dtype, np.number):
+                            value_str = np.array2string(value, precision=6, suppress_small=True, formatter={'float_kind': lambda x: f"{x:.6f}"})
+                            print(f"Content: {value_str}")
+                        else:
+                            print(f"Content: {value}")
                     else:
-                        print(f"Content: {value}")
-                elif isinstance(value, np.ndarray) and value.size < 20:  # Only print small arrays fully
-                    # Format array elements as fixed-point notation
-                    if np.issubdtype(value.dtype, np.number):
-                        value_str = np.array2string(value, precision=6, suppress_small=True, formatter={'float_kind': lambda x: f"{x:.6f}"})
-                        print(f"Content: {value_str}")
-                    else:
-                        print(f"Content: {value}")
-                else:
-                    print(f"Content: {type(value)} (too large to display)")
-                print("-" * 50)
+                        print(f"Content: {type(value)} (too large to display)")
+                    print("-" * 50)
             
             return mat_contents
         
         except Exception as e:
-            print(f"Error loading .mat file: {e}")
+            if self.debug:
+                print(f"Error loading .mat file: {e}")
             return None
     
     def create_spiral_viz_from_values(self, values):
@@ -850,12 +863,14 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 cells_data = mat_contents['cells']
                 
                 # Print detailed information about the cells data structure
-                print("\n==== PhysiCell Cell Data Structure Analysis ====")
-                print(f"Shape of cells array: {cells_data.shape}")
+                if self.debug:
+                    print("\n==== PhysiCell Cell Data Structure Analysis ====")
+                    print(f"Shape of cells array: {cells_data.shape}")
                 
                 # Handle the case where cells_data is an array with 87 elements (single cell)
                 if cells_data.shape[1] == 1 and cells_data.shape[0] >= 80:
-                    print("Detected PhysiCell single cell format (87 properties)")
+                    if self.debug:
+                        print("Detected PhysiCell single cell format (87 properties)")
                     
                     # PhysiCell cells.mat format (based on PhysiCell-Studio interpretation)
                     # Extract cell position (typically stored at indices 1, 2, 3)
@@ -874,9 +889,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     if cells_data.shape[0] > 5:
                         cell_type = int(cells_data[5, 0])  # Assuming type is at index 5
                     
-                    print(f"Cell position: ({x:.6f}, {y:.6f}, {z:.6f})")
-                    print(f"Cell radius: {radius:.6f}")
-                    print(f"Cell type: {cell_type}")
+                    if self.debug:
+                        print(f"Cell position: ({x:.6f}, {y:.6f}, {z:.6f})")
+                        print(f"Cell radius: {radius:.6f}")
+                        print(f"Cell type: {cell_type}")
                     
                     # Create a sphere for the cell
                     sphere = vtk.vtkSphereSource()
@@ -952,7 +968,8 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 # Handle scalar values case (single column, but not 87 elements format)
                 elif cells_data.shape[1] == 1 and isinstance(cells_data[0, 0], (float, int, np.float64, np.int64)):
                     values = cells_data.flatten()
-                    print("Detected simple scalar values array, not PhysiCell cell format")
+                    if self.debug:
+                        print("Detected simple scalar values array, not PhysiCell cell format")
                     
                     # Create a spiral visualization for the values
                     spiral_actors = self.create_spiral_viz_from_values(values)
@@ -975,7 +992,8 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 else:
                     # This case is for more complex cell data structures
                     # For now, just show a message and return
-                    print(f"Complex cell data structure detected: {cells_data.shape}")
+                    if self.debug:
+                        print(f"Complex cell data structure detected: {cells_data.shape}")
                     
                     # Add info text
                     text_actor = vtk.vtkTextActor()
@@ -993,7 +1011,8 @@ class PhysiCellVTKQtViewer(QMainWindow):
         
         except Exception as e:
             # Error handling for visualization issues
-            print(f"Error visualizing MAT file: {e}")
+            if self.debug:
+                print(f"Error visualizing MAT file: {e}")
             import traceback
             traceback.print_exc()
             
@@ -1017,14 +1036,16 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 return False
             
             # Debug output to help diagnose issues
-            print(f"Microenvironment file keys: {list(mat_contents.keys())}")
+            if self.debug:
+                print(f"Microenvironment file keys: {list(mat_contents.keys())}")
             
             # Look for substrate data - PhysiCell format
             if 'multiscale_microenvironment' in mat_contents:
                 microenv_data = mat_contents['multiscale_microenvironment']
                 
                 # Print structure information for debugging
-                print(f"Microenvironment data shape: {microenv_data.shape}")
+                if self.debug:
+                    print(f"Microenvironment data shape: {microenv_data.shape}")
                 
                 # The data is typically stored with substrates in rows and positions in columns
                 # First several rows contain position info, then substrate values
@@ -1035,9 +1056,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     z = microenv_data[2, :].flatten()  # z coordinates
                     
                     # Print coordinate information for debugging
-                    print(f"X range: {x.min():.6f} to {x.max():.6f}, shape: {x.shape}")
-                    print(f"Y range: {y.min():.6f} to {y.max():.6f}, shape: {y.shape}")
-                    print(f"Z range: {z.min():.6f} to {z.max():.6f}, shape: {z.shape}")
+                    if self.debug:
+                        print(f"X range: {x.min():.6f} to {x.max():.6f}, shape: {x.shape}")
+                        print(f"Y range: {y.min():.6f} to {y.max():.6f}, shape: {y.shape}")
+                        print(f"Z range: {z.min():.6f} to {z.max():.6f}, shape: {z.shape}")
                     
                     # Number of substrates (chemical species)
                     substrate_count = microenv_data.shape[0] - 4
@@ -1053,7 +1075,8 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     ny = len(unique_y)
                     nz = len(unique_z)
                     
-                    print(f"Grid dimensions: {nx} x {ny} x {nz}")
+                    if self.debug:
+                        print(f"Grid dimensions: {nx} x {ny} x {nz}")
                     
                     # Create a structured grid for the visualization
                     if nz <= 1:  # 2D case - add a small z-dimension for visualization
@@ -1086,7 +1109,8 @@ class PhysiCellVTKQtViewer(QMainWindow):
                         substrate_data = microenv_data[4 + substrate_idx, :]
                         
                         # Print substrate range for debugging
-                        print(f"Substrate {substrate_idx} range: {substrate_data.min():.6f} to {substrate_data.max():.6f}")
+                        if self.debug:
+                            print(f"Substrate {substrate_idx} range: {substrate_data.min():.6f} to {substrate_data.max():.6f}")
                         
                         # Create the scalar array for this substrate
                         substrate_vtk = vtk.vtkDoubleArray()
@@ -1259,11 +1283,13 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     return True
                     
             # If we get here, we couldn't visualize the microenvironment
-            print("No valid microenvironment data found in the file.")
+            if self.debug:
+                print("No valid microenvironment data found in the file.")
             return False
             
         except Exception as e:
-            print(f"Error visualizing microenvironment file: {e}")
+            if self.debug:
+                print(f"Error visualizing microenvironment file: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -1389,15 +1415,27 @@ def main():
     parser.add_argument('-f', '--folder', 
                        help='Initial folder for loading PhysiCell output',
                        default=None)
+    parser.add_argument('-debug', '--debug', 
+                       help='Enable debug output',
+                       action='store_true')
     args = parser.parse_args()
+    
+    # Set global debug flag
+    global DEBUG
+    DEBUG = args.debug
+    
+    if DEBUG:
+        print("Debug mode enabled")
+        if pyMCDS_cells is None:
+            print("Warning: pyMCDS_cells module not found. XML visualization will be limited.")
     
     app = QApplication(sys.argv)
     
     # Set application style
     app.setStyle("Fusion")
     
-    # Pass the initial directory to the viewer
-    window = PhysiCellVTKQtViewer(initial_dir=args.folder)
+    # Pass the initial directory and debug flag to the viewer
+    window = PhysiCellVTKQtViewer(initial_dir=args.folder, debug=args.debug)
     window.show()
     
     # If a folder was specified and exists, automatically load it
