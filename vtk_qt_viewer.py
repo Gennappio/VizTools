@@ -25,7 +25,7 @@ import argparse
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QSlider, QLabel, QFileDialog, QFrame, QSplitter,
-    QGroupBox, QRadioButton, QCheckBox, QSpinBox, QStyle
+    QGroupBox, QRadioButton, QCheckBox, QSpinBox, QStyle, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
@@ -56,6 +56,11 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.actors = []
         self.data_loaded = False
         self.initial_dir = initial_dir or os.path.expanduser("~")
+        
+        # Slice-related state
+        self.slice_actor = None
+        self.slice_mapper = None
+        self.slice_plane = None
         
         # Set up the main window
         self.setWindowTitle("PhysiCell VTK Viewer")
@@ -181,6 +186,94 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.show_microenv_cb.setEnabled(False)
         self.show_microenv_cb.stateChanged.connect(self.update_visualization)
         display_layout.addWidget(self.show_microenv_cb)
+        
+        # Add slice controls
+        slice_group = QGroupBox("Slice Controls")
+        slice_layout = QVBoxLayout(slice_group)
+        
+        # Slice position controls
+        pos_group = QGroupBox("Slice Position")
+        pos_layout = QVBoxLayout(pos_group)
+        
+        # X position
+        x_layout = QHBoxLayout()
+        x_layout.addWidget(QLabel("X:"))
+        self.slice_x = QSpinBox()
+        self.slice_x.setRange(-1000, 1000)
+        self.slice_x.setValue(0)
+        self.slice_x.valueChanged.connect(self.update_slice)
+        x_layout.addWidget(self.slice_x)
+        pos_layout.addLayout(x_layout)
+        
+        # Y position
+        y_layout = QHBoxLayout()
+        y_layout.addWidget(QLabel("Y:"))
+        self.slice_y = QSpinBox()
+        self.slice_y.setRange(-1000, 1000)
+        self.slice_y.setValue(0)
+        self.slice_y.valueChanged.connect(self.update_slice)
+        y_layout.addWidget(self.slice_y)
+        pos_layout.addLayout(y_layout)
+        
+        # Z position
+        z_layout = QHBoxLayout()
+        z_layout.addWidget(QLabel("Z:"))
+        self.slice_z = QSpinBox()
+        self.slice_z.setRange(-1000, 1000)
+        self.slice_z.setValue(0)
+        self.slice_z.valueChanged.connect(self.update_slice)
+        z_layout.addWidget(self.slice_z)
+        pos_layout.addLayout(z_layout)
+        
+        slice_layout.addWidget(pos_group)
+        
+        # Slice orientation controls
+        orient_group = QGroupBox("Slice Orientation")
+        orient_layout = QVBoxLayout(orient_group)
+        
+        # I orientation
+        i_layout = QHBoxLayout()
+        i_layout.addWidget(QLabel("I:"))
+        self.slice_i = QDoubleSpinBox()
+        self.slice_i.setRange(-1.0, 1.0)
+        self.slice_i.setSingleStep(0.1)
+        self.slice_i.setValue(0.0)
+        self.slice_i.valueChanged.connect(self.update_slice)
+        i_layout.addWidget(self.slice_i)
+        orient_layout.addLayout(i_layout)
+        
+        # J orientation
+        j_layout = QHBoxLayout()
+        j_layout.addWidget(QLabel("J:"))
+        self.slice_j = QDoubleSpinBox()
+        self.slice_j.setRange(-1.0, 1.0)
+        self.slice_j.setSingleStep(0.1)
+        self.slice_j.setValue(0.0)
+        self.slice_j.valueChanged.connect(self.update_slice)
+        j_layout.addWidget(self.slice_j)
+        orient_layout.addLayout(j_layout)
+        
+        # K orientation
+        k_layout = QHBoxLayout()
+        k_layout.addWidget(QLabel("K:"))
+        self.slice_k = QDoubleSpinBox()
+        self.slice_k.setRange(-1.0, 1.0)
+        self.slice_k.setSingleStep(0.1)
+        self.slice_k.setValue(1.0)
+        self.slice_k.valueChanged.connect(self.update_slice)
+        k_layout.addWidget(self.slice_k)
+        orient_layout.addLayout(k_layout)
+        
+        slice_layout.addWidget(orient_group)
+        
+        # Show slice checkbox
+        self.show_slice_cb = QCheckBox("Show Slice")
+        self.show_slice_cb.setChecked(False)
+        self.show_slice_cb.setEnabled(False)
+        self.show_slice_cb.stateChanged.connect(self.update_slice)
+        slice_layout.addWidget(self.show_slice_cb)
+        
+        display_layout.addWidget(slice_group)
         
         self.microenv_opacity_slider = QSlider(Qt.Horizontal)
         self.microenv_opacity_slider.setRange(0, 100)
@@ -368,7 +461,7 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.actors = []
     
     def load_directory(self):
-        """Open a file dialog to select a PhysiCell output directory"""
+        """Load a PhysiCell output directory"""
         directory = QFileDialog.getExistingDirectory(
             self, "Select PhysiCell Output Directory", 
             self.initial_dir,
@@ -401,6 +494,13 @@ class PhysiCellVTKQtViewer(QMainWindow):
                 self.show_microenv_cb.setEnabled(True)
                 self.cell_opacity_slider.setEnabled(True)
                 self.microenv_opacity_slider.setEnabled(True)
+                self.show_slice_cb.setEnabled(True)  # Enable slice controls
+                self.slice_x.setEnabled(True)
+                self.slice_y.setEnabled(True)
+                self.slice_z.setEnabled(True)
+                self.slice_i.setEnabled(True)
+                self.slice_j.setEnabled(True)
+                self.slice_k.setEnabled(True)
                 
                 # Load the first frame
                 self.current_frame = 0
@@ -1408,6 +1508,124 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.vtk_widget.GetRenderWindow().Finalize()
         event.accept()
 
+    def update_slice(self):
+        """Update the slice visualization based on current settings"""
+        if not self.data_loaded or not self.show_slice_cb.isChecked():
+            if self.slice_actor:
+                self.renderer.RemoveActor(self.slice_actor)
+                self.slice_actor = None
+            return
+            
+        # Create or update the slice plane
+        if not self.slice_plane:
+            self.slice_plane = vtk.vtkPlane()
+            
+        # Set plane origin and normal
+        self.slice_plane.SetOrigin(
+            self.slice_x.value(),
+            self.slice_y.value(),
+            self.slice_z.value()
+        )
+        
+        # Normalize the orientation vector
+        i = self.slice_i.value()
+        j = self.slice_j.value()
+        k = self.slice_k.value()
+        length = (i*i + j*j + k*k)**0.5
+        if length > 0:
+            i /= length
+            j /= length
+            k /= length
+        self.slice_plane.SetNormal(i, j, k)
+        
+        # Find the microenvironment volume
+        volume = None
+        volume_data = None
+        for actor in self.actors:
+            if isinstance(actor, vtk.vtkVolume):
+                volume = actor
+                volume_mapper = volume.GetMapper()
+                if volume_mapper and hasattr(volume_mapper, 'GetInput'):
+                    volume_data = volume_mapper.GetInput()
+                break
+                
+        if volume and volume_data:
+            # Remove any existing slice actor
+            if self.slice_actor:
+                self.renderer.RemoveActor(self.slice_actor)
+                self.slice_actor = None
+            
+            # Create a cutter to slice the volume
+            cutter = vtk.vtkCutter()
+            cutter.SetCutFunction(self.slice_plane)
+            cutter.SetInputData(volume_data)
+            cutter.Update()
+            
+            # Get the slice output
+            slice_output = cutter.GetOutput()
+            
+            # Create mapper for the slice
+            if not self.slice_mapper:
+                self.slice_mapper = vtk.vtkPolyDataMapper()
+            
+            # Set scalar mapping properties
+            self.slice_mapper.SetInputConnection(cutter.GetOutputPort())
+            self.slice_mapper.ScalarVisibilityOn()  # Show the scalars
+            
+            # Get the lookup table from the volume for color consistency
+            if volume.GetProperty() and volume.GetProperty().GetRGBTransferFunction():
+                ctf = volume.GetProperty().GetRGBTransferFunction()
+                self.slice_mapper.SetLookupTable(ctf)
+                
+                # Get scalar range from the volume data
+                if volume_data.GetPointData() and volume_data.GetPointData().GetScalars():
+                    scalar_range = volume_data.GetPointData().GetScalars().GetRange()
+                    self.slice_mapper.SetScalarRange(scalar_range)
+            
+            # Create actor for the slice
+            self.slice_actor = vtk.vtkActor()
+            self.slice_actor.SetMapper(self.slice_mapper)
+            
+            # Make the slice more visible
+            self.slice_actor.GetProperty().SetLineWidth(1)
+            self.slice_actor.GetProperty().SetPointSize(4)
+            self.slice_actor.GetProperty().SetOpacity(1.0)  # Fully opaque
+            
+            # Add the slice actor to the renderer
+            self.renderer.AddActor(self.slice_actor)
+            
+            # Create a warped surface for better visualization
+            warp = vtk.vtkWarpScalar()
+            warp.SetInputConnection(cutter.GetOutputPort())
+            warp.SetScaleFactor(0)  # No actual warping, just for triangulation
+            
+            # Triangulate the slice for better appearance
+            triangulate = vtk.vtkTriangleFilter()
+            triangulate.SetInputConnection(warp.GetOutputPort())
+            
+            # Create mapper for the triangulated slice
+            contour_mapper = vtk.vtkPolyDataMapper()
+            contour_mapper.SetInputConnection(triangulate.GetOutputPort())
+            contour_mapper.ScalarVisibilityOn()
+            
+            # Use same color mapping as the original slice
+            if volume.GetProperty() and volume.GetProperty().GetRGBTransferFunction():
+                contour_mapper.SetLookupTable(volume.GetProperty().GetRGBTransferFunction())
+                if volume_data.GetPointData() and volume_data.GetPointData().GetScalars():
+                    contour_mapper.SetScalarRange(volume_data.GetPointData().GetScalars().GetRange())
+            
+            # Create an actor for the triangulated slice
+            contour_actor = vtk.vtkActor()
+            contour_actor.SetMapper(contour_mapper)
+            contour_actor.GetProperty().SetOpacity(0.7)  # Slightly transparent
+            
+            # Add the triangulated slice actor to the renderer
+            self.renderer.AddActor(contour_actor)
+            self.actors.append(contour_actor)  # Keep track of it
+                
+        # Render the scene
+        self.render_window.Render()
+
 def main():
     """Main entry point for the application"""
     # Parse command-line arguments
@@ -1456,6 +1674,13 @@ def main():
             window.show_microenv_cb.setEnabled(True)
             window.cell_opacity_slider.setEnabled(True)
             window.microenv_opacity_slider.setEnabled(True)
+            window.show_slice_cb.setEnabled(True)
+            window.slice_x.setEnabled(True)
+            window.slice_y.setEnabled(True)
+            window.slice_z.setEnabled(True)
+            window.slice_i.setEnabled(True)
+            window.slice_j.setEnabled(True)
+            window.slice_k.setEnabled(True)
             window.current_frame = 0
             window.load_frame(window.current_frame)
             window.data_loaded = True
