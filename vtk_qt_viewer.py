@@ -61,6 +61,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.slice_actor = None
         self.slice_mapper = None
         self.slice_plane = None
+        self.slice_contour_actor = None
+        self.slice_contour_mapper = None
+        self.microenv_data = None
+        self.microenv_vol_prop = None  # Store volume properties for consistent slice appearance
         
         # Set up the main window
         self.setWindowTitle("PhysiCell VTK Viewer")
@@ -456,9 +460,23 @@ class PhysiCellVTKQtViewer(QMainWindow):
     
     def clear_visualization(self):
         """Clear all actors from the renderer"""
+        # Keep the slice actors if they exist and slice is enabled
+        slice_actors = []
+        if self.slice_actor and self.show_slice_cb.isChecked():
+            slice_actors.append(self.slice_actor)
+        if self.slice_contour_actor and self.show_slice_cb.isChecked():
+            slice_actors.append(self.slice_contour_actor)
+            
+        # Remove all actors except slice actors
         for actor in self.actors:
-            self.renderer.RemoveActor(actor)
-        self.actors = []
+            if actor not in slice_actors:
+                self.renderer.RemoveActor(actor)
+                
+        # Update actor list to keep only slice actors
+        if slice_actors:
+            self.actors = slice_actors
+        else:
+            self.actors = []
     
     def load_directory(self):
         """Load a PhysiCell output directory"""
@@ -968,23 +986,21 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     print(f"Shape of cells array: {cells_data.shape}")
                 
                 # Handle the case where cells_data is an array with 87 elements (single cell)
-                if cells_data.shape[1] == 1 and cells_data.shape[0] >= 80:
+                if cells_data.shape[0] >= 80 and cells_data.shape[1] == 1:
+                    # Process single cell format (87 properties x 1 cell)
                     if self.debug:
-                        print("Detected PhysiCell single cell format (87 properties)")
+                        print("Detected PhysiCell single cell format (87 properties x 1 cell)")
                     
-                    # PhysiCell cells.mat format (based on PhysiCell-Studio interpretation)
                     # Extract cell position (typically stored at indices 1, 2, 3)
-                    # These indices may need adjustment based on actual PhysiCell format
                     x = float(cells_data[1, 0])
                     y = float(cells_data[2, 0])
                     z = float(cells_data[3, 0])
                     
-                    # Extract cell radius (convert from volume if needed)
-                    # In PhysiCell, cell volume is often stored, and radius is calculated
+                    # Extract cell radius (convert from volume)
                     volume = float(cells_data[4, 0])  # Assuming volume is at index 4
                     radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0/3.0)
                     
-                    # Cell type (in PhysiCell often an integer code)
+                    # Cell type
                     cell_type = 1  # Default type if not specified
                     if cells_data.shape[0] > 5:
                         cell_type = int(cells_data[5, 0])  # Assuming type is at index 5
@@ -1040,28 +1056,115 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     self.renderer.AddActor2D(text_actor)
                     self.actors.append(text_actor)
                     
-                    # Add description of all 87 properties (if available)
-                    props_text = "Cell Properties:\n"
-                    # This is just an example, actual property meanings would need to be verified
-                    property_names = [
-                        "ID", "x", "y", "z", "volume", "type", 
-                        "cycle_model", "cycle_state", "elapsed_time", "nuclear_volume",
-                        "cytoplasmic_volume", "fluid_fraction", "calcified_fraction", "orientation_x", 
-                        "orientation_y", "orientation_z"
-                    ]
+                    return True
+                
+                # Handle multiple cells case (cells are in columns)
+                elif cells_data.shape[0] >= 80:
+                    # Process multiple cells format (87 properties x N cells)
+                    num_cells = cells_data.shape[1]
+                    if self.debug:
+                        print(f"Detected PhysiCell multiple cells format (87 properties x {num_cells} cells)")
                     
-                    # Add actual values for first 16 properties (or fewer if not available)
-                    for i, name in enumerate(property_names):
-                        if i < cells_data.shape[0]:
-                            props_text += f"{name}: {cells_data[i, 0]:.4f}\n"
+                    # Create a polydata object to hold all cells
+                    all_points = vtk.vtkPoints()
+                    all_cells = vtk.vtkCellArray()
+                    colors = vtk.vtkUnsignedCharArray()
+                    colors.SetNumberOfComponents(3)
+                    colors.SetName("Colors")
                     
-                    props_actor = vtk.vtkTextActor()
-                    props_actor.SetInput(props_text)
-                    props_actor.GetTextProperty().SetFontSize(12)
-                    props_actor.GetTextProperty().SetColor(1, 1, 1)  # White text
-                    props_actor.SetPosition(20, 400)
-                    self.renderer.AddActor2D(props_actor)
-                    self.actors.append(props_actor)
+                    # Process each cell
+                    for cell_idx in range(num_cells):
+                        # Extract cell position (typically stored at indices 1, 2, 3)
+                        x = float(cells_data[1, cell_idx])
+                        y = float(cells_data[2, cell_idx])
+                        z = float(cells_data[3, cell_idx])
+                        
+                        # Extract cell radius (convert from volume)
+                        volume = float(cells_data[4, cell_idx])  # Assuming volume is at index 4
+                        radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0/3.0)
+                        
+                        # Cell type
+                        cell_type = 1  # Default type if not specified
+                        if cells_data.shape[0] > 5:
+                            cell_type = int(cells_data[5, cell_idx])  # Assuming type is at index 5
+                        
+                        if self.debug and cell_idx < 5:  # Show details for first 5 cells only
+                            print(f"Cell {cell_idx} - Position: ({x:.6f}, {y:.6f}, {z:.6f}), Radius: {radius:.6f}, Type: {cell_type}")
+                        
+                        # Create sphere for this cell
+                        sphere_source = vtk.vtkSphereSource()
+                        sphere_source.SetCenter(x, y, z)
+                        sphere_source.SetRadius(radius)  # Use actual radius without scaling
+                        sphere_source.SetPhiResolution(16)
+                        sphere_source.SetThetaResolution(16)
+                        sphere_source.Update()
+                        
+                        # Get polydata from the sphere source
+                        sphere_polydata = sphere_source.GetOutput()
+                        
+                        # Get number of points in the current polydata
+                        num_points = all_points.GetNumberOfPoints()
+                        
+                        # Get cell color based on type
+                        cell_type_colors = {
+                            0: (180, 180, 180),  # Grey
+                            1: (255, 0, 0),      # Red
+                            2: (0, 255, 0),      # Green
+                            3: (0, 0, 255),      # Blue
+                            4: (255, 255, 0),    # Yellow
+                            5: (255, 0, 255),    # Magenta
+                            6: (0, 255, 255),    # Cyan
+                        }
+                        color = cell_type_colors.get(cell_type, (180, 180, 180))  # Default to grey
+                        
+                        # Add sphere points to the combined polydata
+                        for j in range(sphere_polydata.GetNumberOfPoints()):
+                            point = sphere_polydata.GetPoint(j)
+                            all_points.InsertNextPoint(point)
+                            
+                            # Add the same color for each point of this cell
+                            colors.InsertNextTuple3(*color)
+                        
+                        # Add sphere cells (polygons) to the combined polydata
+                        for j in range(sphere_polydata.GetNumberOfCells()):
+                            cell = sphere_polydata.GetCell(j)
+                            polygon = vtk.vtkPolygon()
+                            polygon.GetPointIds().SetNumberOfIds(cell.GetNumberOfPoints())
+                            
+                            for k in range(cell.GetNumberOfPoints()):
+                                polygon.GetPointIds().SetId(k, cell.GetPointId(k) + num_points)
+                            
+                            all_cells.InsertNextCell(polygon)
+                    
+                    # Create combined polydata for all cells
+                    polydata = vtk.vtkPolyData()
+                    polydata.SetPoints(all_points)
+                    polydata.SetPolys(all_cells)
+                    polydata.GetPointData().SetScalars(colors)
+                    
+                    # Create mapper and actor
+                    mapper = vtk.vtkPolyDataMapper()
+                    mapper.SetInputData(polydata)
+                    
+                    actor = vtk.vtkActor()
+                    actor.SetMapper(mapper)
+                    
+                    # Set opacity from slider
+                    opacity = self.cell_opacity_slider.value() / 100.0
+                    actor.GetProperty().SetOpacity(opacity)
+                    
+                    # Add the actor to the renderer
+                    self.renderer.AddActor(actor)
+                    self.actors.append(actor)
+                    
+                    # Add info text about the cells
+                    text_actor = vtk.vtkTextActor()
+                    text_actor.SetInput(f"Multiple cells: {num_cells} total cells")
+                    text_actor.GetTextProperty().SetFontSize(16)
+                    text_actor.GetTextProperty().SetColor(1, 1, 0)  # Yellow text
+                    text_actor.SetPosition(20, 30)
+                    self.renderer.AddActor2D(text_actor)
+                    self.actors.append(text_actor)
                     
                     return True
                 
@@ -1203,6 +1306,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     grid.SetYCoordinates(y_vtk)
                     grid.SetZCoordinates(z_vtk)
                     
+                    # Store the grid for slicing, independent of visualization
+                    self.microenv_data = vtk.vtkRectilinearGrid()
+                    self.microenv_data.DeepCopy(grid)
+                    
                     # Process each substrate
                     for substrate_idx in range(substrate_count):
                         # Get the substrate data (row 4+idx in the microenvironment matrix)
@@ -1271,6 +1378,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
                         
                         grid.GetPointData().SetScalars(substrate_vtk)
                         
+                        # Also add to the stored microenv_data grid for slicing
+                        self.microenv_data.GetPointData().SetScalars(substrate_vtk.NewInstance())
+                        self.microenv_data.GetPointData().GetScalars().DeepCopy(substrate_vtk)
+                        
                         # Create a volume mapper
                         mapper = vtk.vtkSmartVolumeMapper()
                         mapper.SetInputData(grid)
@@ -1317,6 +1428,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
                         volume_property.ShadeOn()
                         volume_property.SetInterpolationTypeToLinear()
                         
+                        # Store the volume property for slice visualization consistency
+                        self.microenv_vol_prop = vtk.vtkVolumeProperty()
+                        self.microenv_vol_prop.DeepCopy(volume_property)
+                        
                         # Set wireframe mode based on checkbox
                         if self.microenv_wireframe_cb.isChecked():
                             # Use edges to create wireframe effect
@@ -1352,8 +1467,9 @@ class PhysiCellVTKQtViewer(QMainWindow):
                         volume.SetMapper(mapper)
                         volume.SetProperty(volume_property)
                         
-                        # Add the volume to the renderer
-                        self.renderer.AddVolume(volume)
+                        # Only add the volume to the renderer if show_microenv_cb is checked
+                        if self.show_microenv_cb.isChecked():
+                            self.renderer.AddVolume(volume)
                         self.actors.append(volume)
                         
                         # Add color bar for this substrate
@@ -1380,6 +1496,10 @@ class PhysiCellVTKQtViewer(QMainWindow):
                     self.renderer.AddActor2D(text_actor)
                     self.actors.append(text_actor)
                     
+                    # Update slice if it's enabled
+                    if self.show_slice_cb.isChecked():
+                        self.update_slice()
+                    
                     return True
                     
             # If we get here, we couldn't visualize the microenvironment
@@ -1397,7 +1517,123 @@ class PhysiCellVTKQtViewer(QMainWindow):
     def update_visualization(self):
         """Update the visualization based on current settings"""
         if self.data_loaded:
+            # Remember if we had a slice visible
+            slice_was_visible = False
+            if self.slice_actor and self.slice_actor.GetVisibility():
+                slice_was_visible = True
+                
+            # Clear previous actors
+            self.clear_visualization()
+            
+            # Reload the current frame with updated settings
             self.load_frame(self.current_frame)
+            
+            # Update the slice if it was visible
+            if slice_was_visible and self.show_slice_cb.isChecked():
+                self.update_slice()
+    
+    def update_slice(self):
+        """Update the slice visualization based on current settings"""
+        # Clean up existing slice actors
+        if self.slice_actor:
+            self.renderer.RemoveActor(self.slice_actor)
+            self.slice_actor = None
+        
+        if self.slice_contour_actor:
+            self.renderer.RemoveActor(self.slice_contour_actor)
+            self.slice_contour_actor = None
+            
+        # If slice checkbox is unchecked or no data, don't show slice
+        if not self.data_loaded or not self.show_slice_cb.isChecked() or not self.microenv_data:
+            return
+            
+        # Create or update the slice plane
+        if not self.slice_plane:
+            self.slice_plane = vtk.vtkPlane()
+            
+        # Set plane origin and normal
+        self.slice_plane.SetOrigin(
+            self.slice_x.value(),
+            self.slice_y.value(),
+            self.slice_z.value()
+        )
+        
+        # Normalize the orientation vector
+        i = self.slice_i.value()
+        j = self.slice_j.value()
+        k = self.slice_k.value()
+        length = (i*i + j*j + k*k)**0.5
+        if length > 0:
+            i /= length
+            j /= length
+            k /= length
+        self.slice_plane.SetNormal(i, j, k)
+        
+        # Create the cutter to slice the microenvironment data
+        cutter = vtk.vtkCutter()
+        cutter.SetCutFunction(self.slice_plane)
+        cutter.SetInputData(self.microenv_data)  # Use stored microenv data
+        cutter.Update()
+        
+        # Get the slice output
+        slice_output = cutter.GetOutput()
+        
+        # Create mapper for the slice
+        self.slice_mapper = vtk.vtkPolyDataMapper()
+        self.slice_mapper.SetInputConnection(cutter.GetOutputPort())
+        self.slice_mapper.ScalarVisibilityOn()  # Show the scalars
+        
+        # Use the color transfer function from the microenvironment if available
+        if self.microenv_vol_prop and self.microenv_vol_prop.GetRGBTransferFunction():
+            ctf = self.microenv_vol_prop.GetRGBTransferFunction()
+            self.slice_mapper.SetLookupTable(ctf)
+            
+            # Get scalar range from the microenvironment data
+            if self.microenv_data.GetPointData() and self.microenv_data.GetPointData().GetScalars():
+                scalar_range = self.microenv_data.GetPointData().GetScalars().GetRange()
+                self.slice_mapper.SetScalarRange(scalar_range)
+        
+        # Create actor for the slice
+        self.slice_actor = vtk.vtkActor()
+        self.slice_actor.SetMapper(self.slice_mapper)
+        
+        # Make the slice more visible
+        self.slice_actor.GetProperty().SetLineWidth(1)
+        self.slice_actor.GetProperty().SetPointSize(4)
+        self.slice_actor.GetProperty().SetOpacity(1.0)  # Fully opaque
+        
+        # Add the slice actor to the renderer
+        self.renderer.AddActor(self.slice_actor)
+        
+        # Create a triangulated surface for better visualization
+        warp = vtk.vtkWarpScalar()
+        warp.SetInputConnection(cutter.GetOutputPort())
+        warp.SetScaleFactor(0)  # No actual warping, just for triangulation
+        
+        triangulate = vtk.vtkTriangleFilter()
+        triangulate.SetInputConnection(warp.GetOutputPort())
+        
+        # Create mapper for the triangulated slice
+        self.slice_contour_mapper = vtk.vtkPolyDataMapper()
+        self.slice_contour_mapper.SetInputConnection(triangulate.GetOutputPort())
+        self.slice_contour_mapper.ScalarVisibilityOn()
+        
+        # Use the same color mapping as the original slice
+        if self.microenv_vol_prop and self.microenv_vol_prop.GetRGBTransferFunction():
+            self.slice_contour_mapper.SetLookupTable(self.microenv_vol_prop.GetRGBTransferFunction())
+            if self.microenv_data.GetPointData() and self.microenv_data.GetPointData().GetScalars():
+                self.slice_contour_mapper.SetScalarRange(self.microenv_data.GetPointData().GetScalars().GetRange())
+        
+        # Create an actor for the triangulated slice
+        self.slice_contour_actor = vtk.vtkActor()
+        self.slice_contour_actor.SetMapper(self.slice_contour_mapper)
+        self.slice_contour_actor.GetProperty().SetOpacity(0.7)  # Slightly transparent
+        
+        # Add the triangulated slice actor to the renderer
+        self.renderer.AddActor(self.slice_contour_actor)
+        
+        # Render the scene
+        self.render_window.Render()
     
     def slider_changed(self, value):
         """Handle changes to the frame slider"""
@@ -1507,124 +1743,6 @@ class PhysiCellVTKQtViewer(QMainWindow):
         self.animation_timer.stop()
         self.vtk_widget.GetRenderWindow().Finalize()
         event.accept()
-
-    def update_slice(self):
-        """Update the slice visualization based on current settings"""
-        if not self.data_loaded or not self.show_slice_cb.isChecked():
-            if self.slice_actor:
-                self.renderer.RemoveActor(self.slice_actor)
-                self.slice_actor = None
-            return
-            
-        # Create or update the slice plane
-        if not self.slice_plane:
-            self.slice_plane = vtk.vtkPlane()
-            
-        # Set plane origin and normal
-        self.slice_plane.SetOrigin(
-            self.slice_x.value(),
-            self.slice_y.value(),
-            self.slice_z.value()
-        )
-        
-        # Normalize the orientation vector
-        i = self.slice_i.value()
-        j = self.slice_j.value()
-        k = self.slice_k.value()
-        length = (i*i + j*j + k*k)**0.5
-        if length > 0:
-            i /= length
-            j /= length
-            k /= length
-        self.slice_plane.SetNormal(i, j, k)
-        
-        # Find the microenvironment volume
-        volume = None
-        volume_data = None
-        for actor in self.actors:
-            if isinstance(actor, vtk.vtkVolume):
-                volume = actor
-                volume_mapper = volume.GetMapper()
-                if volume_mapper and hasattr(volume_mapper, 'GetInput'):
-                    volume_data = volume_mapper.GetInput()
-                break
-                
-        if volume and volume_data:
-            # Remove any existing slice actor
-            if self.slice_actor:
-                self.renderer.RemoveActor(self.slice_actor)
-                self.slice_actor = None
-            
-            # Create a cutter to slice the volume
-            cutter = vtk.vtkCutter()
-            cutter.SetCutFunction(self.slice_plane)
-            cutter.SetInputData(volume_data)
-            cutter.Update()
-            
-            # Get the slice output
-            slice_output = cutter.GetOutput()
-            
-            # Create mapper for the slice
-            if not self.slice_mapper:
-                self.slice_mapper = vtk.vtkPolyDataMapper()
-            
-            # Set scalar mapping properties
-            self.slice_mapper.SetInputConnection(cutter.GetOutputPort())
-            self.slice_mapper.ScalarVisibilityOn()  # Show the scalars
-            
-            # Get the lookup table from the volume for color consistency
-            if volume.GetProperty() and volume.GetProperty().GetRGBTransferFunction():
-                ctf = volume.GetProperty().GetRGBTransferFunction()
-                self.slice_mapper.SetLookupTable(ctf)
-                
-                # Get scalar range from the volume data
-                if volume_data.GetPointData() and volume_data.GetPointData().GetScalars():
-                    scalar_range = volume_data.GetPointData().GetScalars().GetRange()
-                    self.slice_mapper.SetScalarRange(scalar_range)
-            
-            # Create actor for the slice
-            self.slice_actor = vtk.vtkActor()
-            self.slice_actor.SetMapper(self.slice_mapper)
-            
-            # Make the slice more visible
-            self.slice_actor.GetProperty().SetLineWidth(1)
-            self.slice_actor.GetProperty().SetPointSize(4)
-            self.slice_actor.GetProperty().SetOpacity(1.0)  # Fully opaque
-            
-            # Add the slice actor to the renderer
-            self.renderer.AddActor(self.slice_actor)
-            
-            # Create a warped surface for better visualization
-            warp = vtk.vtkWarpScalar()
-            warp.SetInputConnection(cutter.GetOutputPort())
-            warp.SetScaleFactor(0)  # No actual warping, just for triangulation
-            
-            # Triangulate the slice for better appearance
-            triangulate = vtk.vtkTriangleFilter()
-            triangulate.SetInputConnection(warp.GetOutputPort())
-            
-            # Create mapper for the triangulated slice
-            contour_mapper = vtk.vtkPolyDataMapper()
-            contour_mapper.SetInputConnection(triangulate.GetOutputPort())
-            contour_mapper.ScalarVisibilityOn()
-            
-            # Use same color mapping as the original slice
-            if volume.GetProperty() and volume.GetProperty().GetRGBTransferFunction():
-                contour_mapper.SetLookupTable(volume.GetProperty().GetRGBTransferFunction())
-                if volume_data.GetPointData() and volume_data.GetPointData().GetScalars():
-                    contour_mapper.SetScalarRange(volume_data.GetPointData().GetScalars().GetRange())
-            
-            # Create an actor for the triangulated slice
-            contour_actor = vtk.vtkActor()
-            contour_actor.SetMapper(contour_mapper)
-            contour_actor.GetProperty().SetOpacity(0.7)  # Slightly transparent
-            
-            # Add the triangulated slice actor to the renderer
-            self.renderer.AddActor(contour_actor)
-            self.actors.append(contour_actor)  # Keep track of it
-                
-        # Render the scene
-        self.render_window.Render()
 
 def main():
     """Main entry point for the application"""
