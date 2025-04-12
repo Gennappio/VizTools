@@ -57,18 +57,33 @@ def load_mat_file(file_path, debug=False):
             print(f"Error loading .mat file: {e}")
         return None
 
-def find_output_files(directory, frame_number):
+def find_output_files(directory, frame_number, cells_only=False):
     """Find PhysiCell output files for a given frame number"""
     # Define file patterns to look for
     mat_pattern = os.path.join(directory, f"output{frame_number:08d}_cells.mat")
     xml_pattern = os.path.join(directory, f"output{frame_number:08d}.xml")
-    microenv_pattern = os.path.join(directory, f"output{frame_number:08d}_microenvironment0.mat")
+    
+    # Only look for microenvironment files if not in cells_only mode
+    if cells_only:
+        microenv_file = None
+    else:
+        # Try different naming patterns for microenvironment files
+        microenv_pattern = os.path.join(directory, f"output{frame_number:08d}_microenvironment0.mat")
+        microenv_alt_pattern = os.path.join(directory, f"output{frame_number:08d}_microenvironment.mat")
+        
+        # Check if either file exists
+        if os.path.isfile(microenv_pattern):
+            microenv_file = microenv_pattern
+        elif os.path.isfile(microenv_alt_pattern):
+            microenv_file = microenv_alt_pattern
+        else:
+            microenv_file = None
     
     # Create result dict
     files = {
         "mat_file": mat_pattern if os.path.isfile(mat_pattern) else None,
         "xml_file": xml_pattern if os.path.isfile(xml_pattern) else None,
-        "microenv_file": microenv_pattern if os.path.isfile(microenv_pattern) else None
+        "microenv_file": microenv_file
     }
     
     return files

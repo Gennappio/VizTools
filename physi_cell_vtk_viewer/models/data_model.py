@@ -10,12 +10,13 @@ from physi_cell_vtk_viewer.utils.file_utils import find_output_files, find_max_f
 class PhysiCellData:
     """Model for PhysiCell output data"""
     
-    def __init__(self, debug=False):
+    def __init__(self, debug=False, cells_only=False):
         """Initialize the data model"""
         self.output_dir = ""
         self.current_frame = 0
         self.max_frame = -1
         self.debug = debug
+        self.cells_only = cells_only
         
         # Optional pyMCDS module for XML parsing
         try:
@@ -52,13 +53,13 @@ class PhysiCellData:
         self.current_frame = frame_number
         
         # Find all the files for this frame
-        files = find_output_files(self.output_dir, frame_number)
+        files = find_output_files(self.output_dir, frame_number, self.cells_only)
         
         # Load the data from each file type
         data = {
             'cells_mat': self.load_cells_mat(files['mat_file']),
             'cells_xml': self.load_cells_xml(files['xml_file']),
-            'microenv': self.load_microenv(files['microenv_file'])
+            'microenv': None if self.cells_only else self.load_microenv(files['microenv_file'])
         }
         
         return data
@@ -207,4 +208,31 @@ class PhysiCellData:
             substrate_data = microenv_data[4 + substrate_idx, :]
             print(f"Substrate {substrate_idx} range: {substrate_data.min():.6f} to {substrate_data.max():.6f}")
         
-        print("-" * 50) 
+        print("-" * 50)
+
+def find_output_files(directory, frame_number, cells_only=False):
+    """Find relevant output files for a given frame number"""
+    frame_str = f"{frame_number:08d}"
+    
+    # Construct file paths
+    xml_file = f"{directory}/output{frame_str}.xml"
+    mat_file = f"{directory}/output{frame_str}_cells.mat"
+    
+    # Only look for microenvironment files if not in cells_only mode
+    if cells_only:
+        microenv_file = None
+    else:
+        # Try different naming patterns for microenvironment files
+        microenv_file_candidates = [
+            f"{directory}/output{frame_str}_microenvironment0.mat",
+            f"{directory}/output{frame_str}_microenvironment.mat"
+        ]
+        
+        # Use the first one that exists
+        microenv_file = next((f for f in microenv_file_candidates if os.path.exists(f)), None)
+    
+    return {
+        'xml_file': xml_file if os.path.exists(xml_file) else None,
+        'mat_file': mat_file if os.path.exists(mat_file) else None,
+        'microenv_file': microenv_file
+    } 

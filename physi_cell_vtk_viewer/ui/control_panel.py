@@ -5,9 +5,13 @@ Control panel for PhysiCell viewer
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel, 
     QGroupBox, QCheckBox, QSpinBox, QDoubleSpinBox, QStyle, QFileDialog,
-    QScrollArea, QSizePolicy
+    QScrollArea, QSizePolicy, QFrame, QComboBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal
+
+from physi_cell_vtk_viewer.utils.variable_reader import (
+    get_microenv_variables, get_cell_variables
+)
 
 class ControlPanel(QWidget):
     """Control panel for PhysiCell VTK visualization"""
@@ -19,6 +23,7 @@ class ControlPanel(QWidget):
     slice_options_changed = pyqtSignal(dict)
     apply_changes = pyqtSignal()
     play_toggled = pyqtSignal(bool)
+    variables_selected = pyqtSignal(dict)  # Signal for variable selection
     
     def __init__(self, parent=None):
         """Initialize the control panel"""
@@ -121,23 +126,66 @@ class ControlPanel(QWidget):
         display_group = QGroupBox("Display Options")
         display_layout = QVBoxLayout(display_group)
         
+        # Variable selection group
+        var_group = QGroupBox("Variable Selection")
+        var_layout = QVBoxLayout(var_group)
+        
+        # Microenvironment variable selection
+        var_layout.addWidget(QLabel("Microenvironment Variable:"))
+        self.microenv_var_combo = QComboBox()
+        self.microenv_var_combo.setEnabled(False)
+        self.microenv_var_combo.currentIndexChanged.connect(self.on_microenv_var_changed)
+        var_layout.addWidget(self.microenv_var_combo)
+        
+        # Cell variable selection
+        var_layout.addWidget(QLabel("Cell Variable:"))
+        self.cell_var_combo = QComboBox()
+        self.cell_var_combo.setEnabled(False)
+        self.cell_var_combo.currentIndexChanged.connect(self.on_cell_var_changed)
+        var_layout.addWidget(self.cell_var_combo)
+        
+        # Cell coloring variable selection
+        var_layout.addWidget(QLabel("Color Cells By:"))
+        self.cell_color_combo = QComboBox()
+        self.cell_color_combo.setEnabled(False)
+        self.cell_color_combo.currentIndexChanged.connect(self.on_cell_color_var_changed)
+        var_layout.addWidget(self.cell_color_combo)
+        
+        display_layout.addWidget(var_group)
+        
+        # Add a separator line
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        display_layout.addWidget(line)
+        
+        # Display mode options
+        self.cell_as_spheres_cb = QCheckBox("Display Cells as Spheres")
+        self.cell_as_spheres_cb.setChecked(True)
+        self.cell_as_spheres_cb.setEnabled(False)
+        self.cell_as_spheres_cb.stateChanged.connect(self.on_display_option_changed)
+        display_layout.addWidget(self.cell_as_spheres_cb)
+        
         self.microenv_wireframe_cb = QCheckBox("Microenvironment Wireframe")
         self.microenv_wireframe_cb.setChecked(False)
         self.microenv_wireframe_cb.setEnabled(False)
+        self.microenv_wireframe_cb.stateChanged.connect(self.on_display_option_changed)
         display_layout.addWidget(self.microenv_wireframe_cb)
         
         self.show_mat_cb = QCheckBox("Show Cell Data")
         self.show_mat_cb.setChecked(True)
         self.show_mat_cb.setEnabled(False)
+        self.show_mat_cb.stateChanged.connect(self.on_display_option_changed)
         display_layout.addWidget(self.show_mat_cb)
         
         self.show_microenv_cb = QCheckBox("Show Microenvironment")
         self.show_microenv_cb.setChecked(True)
         self.show_microenv_cb.setEnabled(False)
+        self.show_microenv_cb.stateChanged.connect(self.on_display_option_changed)
         display_layout.addWidget(self.show_microenv_cb)
         
-        # Microenvironment color range controls
-        color_range_group = QGroupBox("Microenvironment Color Range")
+        # Microenvironment color range controls (Volume Rendering)
+        color_range_group = QGroupBox("Microenvironment Volume Color Range")
         color_range_layout = QVBoxLayout(color_range_group)
         
         # Auto range checkbox
@@ -145,6 +193,7 @@ class ControlPanel(QWidget):
         self.auto_range_cb.setChecked(True)
         self.auto_range_cb.setEnabled(False)
         self.auto_range_cb.stateChanged.connect(self.toggle_color_range_inputs)
+        self.auto_range_cb.stateChanged.connect(self.on_display_option_changed)
         color_range_layout.addWidget(self.auto_range_cb)
         
         # Min/Max value inputs
@@ -158,6 +207,7 @@ class ControlPanel(QWidget):
         self.min_range_input.setDecimals(6)
         self.min_range_input.setValue(0.0)
         self.min_range_input.setEnabled(False)
+        self.min_range_input.valueChanged.connect(self.on_display_option_changed)
         min_layout.addWidget(self.min_range_input)
         range_layout.addLayout(min_layout)
         
@@ -169,17 +219,103 @@ class ControlPanel(QWidget):
         self.max_range_input.setDecimals(6)
         self.max_range_input.setValue(1.0)
         self.max_range_input.setEnabled(False)
+        self.max_range_input.valueChanged.connect(self.on_display_option_changed)
         max_layout.addWidget(self.max_range_input)
         range_layout.addLayout(max_layout)
         
         color_range_layout.addLayout(range_layout)
         display_layout.addWidget(color_range_group)
         
+        # Cell variable color range controls
+        cell_color_range_group = QGroupBox("Cell Variable Color Range")
+        cell_color_range_layout = QVBoxLayout(cell_color_range_group)
+        
+        # Auto range checkbox for cells
+        self.cell_auto_range_cb = QCheckBox("Auto Range")
+        self.cell_auto_range_cb.setChecked(True)
+        self.cell_auto_range_cb.setEnabled(False)
+        self.cell_auto_range_cb.stateChanged.connect(self.toggle_cell_color_range_inputs)
+        self.cell_auto_range_cb.stateChanged.connect(self.on_display_option_changed)
+        cell_color_range_layout.addWidget(self.cell_auto_range_cb)
+        
+        # Min/Max value inputs for cells
+        cell_range_layout = QHBoxLayout()
+        
+        # Min value input for cells
+        cell_min_layout = QVBoxLayout()
+        cell_min_layout.addWidget(QLabel("Min:"))
+        self.cell_min_range_input = QDoubleSpinBox()
+        self.cell_min_range_input.setRange(-1000000, 1000000)
+        self.cell_min_range_input.setDecimals(6)
+        self.cell_min_range_input.setValue(0.0)
+        self.cell_min_range_input.setEnabled(False)
+        self.cell_min_range_input.valueChanged.connect(self.on_display_option_changed)
+        cell_min_layout.addWidget(self.cell_min_range_input)
+        cell_range_layout.addLayout(cell_min_layout)
+        
+        # Max value input for cells
+        cell_max_layout = QVBoxLayout()
+        cell_max_layout.addWidget(QLabel("Max:"))
+        self.cell_max_range_input = QDoubleSpinBox()
+        self.cell_max_range_input.setRange(-1000000, 1000000)
+        self.cell_max_range_input.setDecimals(6)
+        self.cell_max_range_input.setValue(1.0)
+        self.cell_max_range_input.setEnabled(False)
+        self.cell_max_range_input.valueChanged.connect(self.on_display_option_changed)
+        cell_max_layout.addWidget(self.cell_max_range_input)
+        cell_range_layout.addLayout(cell_max_layout)
+        
+        cell_color_range_layout.addLayout(cell_range_layout)
+        display_layout.addWidget(cell_color_range_group)
+        
+        # Microenvironment slice color range controls
+        slice_color_range_group = QGroupBox("Slice Color Range")
+        slice_color_range_layout = QVBoxLayout(slice_color_range_group)
+        
+        # Auto range checkbox for slice
+        self.slice_auto_range_cb = QCheckBox("Auto Range")
+        self.slice_auto_range_cb.setChecked(True)
+        self.slice_auto_range_cb.setEnabled(False)
+        self.slice_auto_range_cb.stateChanged.connect(self.toggle_slice_color_range_inputs)
+        self.slice_auto_range_cb.stateChanged.connect(self.on_display_option_changed)
+        slice_color_range_layout.addWidget(self.slice_auto_range_cb)
+        
+        # Min/Max value inputs for slice
+        slice_range_layout = QHBoxLayout()
+        
+        # Min value input for slice
+        slice_min_layout = QVBoxLayout()
+        slice_min_layout.addWidget(QLabel("Min:"))
+        self.slice_min_range_input = QDoubleSpinBox()
+        self.slice_min_range_input.setRange(-1000000, 1000000)
+        self.slice_min_range_input.setDecimals(6)
+        self.slice_min_range_input.setValue(0.0)
+        self.slice_min_range_input.setEnabled(False)
+        self.slice_min_range_input.valueChanged.connect(self.on_display_option_changed)
+        slice_min_layout.addWidget(self.slice_min_range_input)
+        slice_range_layout.addLayout(slice_min_layout)
+        
+        # Max value input for slice
+        slice_max_layout = QVBoxLayout()
+        slice_max_layout.addWidget(QLabel("Max:"))
+        self.slice_max_range_input = QDoubleSpinBox()
+        self.slice_max_range_input.setRange(-1000000, 1000000)
+        self.slice_max_range_input.setDecimals(6)
+        self.slice_max_range_input.setValue(1.0)
+        self.slice_max_range_input.setEnabled(False)
+        self.slice_max_range_input.valueChanged.connect(self.on_display_option_changed)
+        slice_max_layout.addWidget(self.slice_max_range_input)
+        slice_range_layout.addLayout(slice_max_layout)
+        
+        slice_color_range_layout.addLayout(slice_range_layout)
+        display_layout.addWidget(slice_color_range_group)
+        
         # Opacity sliders
         self.microenv_opacity_slider = QSlider(Qt.Horizontal)
         self.microenv_opacity_slider.setRange(0, 100)
         self.microenv_opacity_slider.setValue(50)
         self.microenv_opacity_slider.setEnabled(False)
+        self.microenv_opacity_slider.valueChanged.connect(self.on_display_option_changed)
         display_layout.addWidget(QLabel("Microenvironment Opacity:"))
         display_layout.addWidget(self.microenv_opacity_slider)
         
@@ -187,6 +323,7 @@ class ControlPanel(QWidget):
         self.cell_opacity_slider.setRange(0, 100)
         self.cell_opacity_slider.setValue(70)
         self.cell_opacity_slider.setEnabled(False)
+        self.cell_opacity_slider.valueChanged.connect(self.on_display_option_changed)
         display_layout.addWidget(QLabel("Cell Opacity:"))
         display_layout.addWidget(self.cell_opacity_slider)
         
@@ -207,6 +344,7 @@ class ControlPanel(QWidget):
         self.slice_x = QSpinBox()
         self.slice_x.setRange(-1000, 1000)
         self.slice_x.setValue(0)
+        self.slice_x.valueChanged.connect(self.on_slice_option_changed)
         x_layout.addWidget(self.slice_x)
         pos_layout.addLayout(x_layout)
         
@@ -216,6 +354,7 @@ class ControlPanel(QWidget):
         self.slice_y = QSpinBox()
         self.slice_y.setRange(-1000, 1000)
         self.slice_y.setValue(0)
+        self.slice_y.valueChanged.connect(self.on_slice_option_changed)
         y_layout.addWidget(self.slice_y)
         pos_layout.addLayout(y_layout)
         
@@ -225,6 +364,7 @@ class ControlPanel(QWidget):
         self.slice_z = QSpinBox()
         self.slice_z.setRange(-1000, 1000)
         self.slice_z.setValue(0)
+        self.slice_z.valueChanged.connect(self.on_slice_option_changed)
         z_layout.addWidget(self.slice_z)
         pos_layout.addLayout(z_layout)
         
@@ -241,6 +381,7 @@ class ControlPanel(QWidget):
         self.slice_i.setRange(-1.0, 1.0)
         self.slice_i.setSingleStep(0.1)
         self.slice_i.setValue(0.0)
+        self.slice_i.valueChanged.connect(self.on_slice_option_changed)
         i_layout.addWidget(self.slice_i)
         orient_layout.addLayout(i_layout)
         
@@ -251,6 +392,7 @@ class ControlPanel(QWidget):
         self.slice_j.setRange(-1.0, 1.0)
         self.slice_j.setSingleStep(0.1)
         self.slice_j.setValue(0.0)
+        self.slice_j.valueChanged.connect(self.on_slice_option_changed)
         j_layout.addWidget(self.slice_j)
         orient_layout.addLayout(j_layout)
         
@@ -261,6 +403,7 @@ class ControlPanel(QWidget):
         self.slice_k.setRange(-1.0, 1.0)
         self.slice_k.setSingleStep(0.1)
         self.slice_k.setValue(1.0)
+        self.slice_k.valueChanged.connect(self.on_slice_option_changed)
         k_layout.addWidget(self.slice_k)
         orient_layout.addLayout(k_layout)
         
@@ -270,6 +413,7 @@ class ControlPanel(QWidget):
         self.show_slice_cb = QCheckBox("Show Slice")
         self.show_slice_cb.setChecked(False)
         self.show_slice_cb.setEnabled(False)
+        self.show_slice_cb.stateChanged.connect(self.on_slice_option_changed)
         slice_layout.addWidget(self.show_slice_cb)
         
         self.layout.addWidget(slice_group)
@@ -390,6 +534,28 @@ class ControlPanel(QWidget):
         self.min_range_input.setEnabled(enabled)
         self.max_range_input.setEnabled(enabled)
     
+    def toggle_cell_color_range_inputs(self):
+        """Toggle the cell min/max input fields based on auto range checkbox"""
+        auto_color_range = self.cell_auto_range_cb.isChecked()
+        
+        # Only enable min/max input fields if auto range is off
+        enabled = not auto_color_range
+        
+        # Set input field enabled state
+        self.cell_min_range_input.setEnabled(enabled)
+        self.cell_max_range_input.setEnabled(enabled)
+    
+    def toggle_slice_color_range_inputs(self):
+        """Toggle the slice min/max input fields based on auto range checkbox"""
+        auto_color_range = self.slice_auto_range_cb.isChecked()
+        
+        # Only enable min/max input fields if auto range is off
+        enabled = not auto_color_range
+        
+        # Set input field enabled state
+        self.slice_min_range_input.setEnabled(enabled)
+        self.slice_max_range_input.setEnabled(enabled)
+    
     def display_options_changed_handler(self):
         """Handle any display option change"""
         # Collect all display options into a dictionary
@@ -400,8 +566,15 @@ class ControlPanel(QWidget):
             'auto_range': self.auto_range_cb.isChecked(),
             'min_value': self.min_range_input.value(),
             'max_value': self.max_range_input.value(),
+            'cell_auto_range': self.cell_auto_range_cb.isChecked(),
+            'cell_min_value': self.cell_min_range_input.value(),
+            'cell_max_value': self.cell_max_range_input.value(),
+            'slice_auto_range': self.slice_auto_range_cb.isChecked(),
+            'slice_min_value': self.slice_min_range_input.value(),
+            'slice_max_value': self.slice_max_range_input.value(),
             'cell_opacity': self.cell_opacity_slider.value(),
-            'microenv_opacity': self.microenv_opacity_slider.value()
+            'microenv_opacity': self.microenv_opacity_slider.value(),
+            'cell_as_spheres': self.cell_as_spheres_cb.isChecked()
         }
         
         # Emit signal with all options
@@ -436,6 +609,8 @@ class ControlPanel(QWidget):
         self.cell_opacity_slider.setEnabled(True)
         self.microenv_opacity_slider.setEnabled(True)
         self.auto_range_cb.setEnabled(True)
+        self.cell_auto_range_cb.setEnabled(True)
+        self.slice_auto_range_cb.setEnabled(True)
         self.show_slice_cb.setEnabled(True)
         self.slice_x.setEnabled(True)
         self.slice_y.setEnabled(True)
@@ -444,6 +619,12 @@ class ControlPanel(QWidget):
         self.slice_j.setEnabled(True)
         self.slice_k.setEnabled(True)
         self.apply_btn.setEnabled(True)
+        
+        # Enable variable selection dropdowns
+        self.microenv_var_combo.setEnabled(True)
+        self.cell_var_combo.setEnabled(True)
+        self.cell_color_combo.setEnabled(True)
+        self.cell_as_spheres_cb.setEnabled(True)
     
     def set_frame(self, frame):
         """Set the current frame number"""
@@ -466,15 +647,175 @@ class ControlPanel(QWidget):
         """Update the info label text"""
         self.info_label.setText(text)
     
-    def update_min_max_ranges(self, min_val, max_val):
+    def update_min_max_ranges(self, min_val, max_val, cell_min_val=None, cell_max_val=None, slice_min_val=None, slice_max_val=None):
         """Update the min/max range inputs with current data values"""
         # Block signals to avoid triggering visualization update
         self.min_range_input.blockSignals(True)
         self.max_range_input.blockSignals(True)
+        self.cell_min_range_input.blockSignals(True)
+        self.cell_max_range_input.blockSignals(True)
+        self.slice_min_range_input.blockSignals(True)
+        self.slice_max_range_input.blockSignals(True)
         
+        # Update microenvironment values
         self.min_range_input.setValue(min_val)
         self.max_range_input.setValue(max_val)
+        
+        # Update cell values if provided
+        if cell_min_val is not None and cell_max_val is not None:
+            self.cell_min_range_input.setValue(cell_min_val)
+            self.cell_max_range_input.setValue(cell_max_val)
+        
+        # Update slice values if provided
+        if slice_min_val is not None and slice_max_val is not None:
+            self.slice_min_range_input.setValue(slice_min_val)
+            self.slice_max_range_input.setValue(slice_max_val)
         
         # Unblock signals
         self.min_range_input.blockSignals(False)
         self.max_range_input.blockSignals(False)
+        self.cell_min_range_input.blockSignals(False)
+        self.cell_max_range_input.blockSignals(False)
+        self.slice_min_range_input.blockSignals(False)
+        self.slice_max_range_input.blockSignals(False)
+    
+    def update_variable_dropdowns(self, xml_file, cells_file):
+        """Update the dropdown menus with variables from the current files"""
+        # Clear previous items
+        self.microenv_var_combo.clear()
+        self.cell_var_combo.clear()
+        self.cell_color_combo.clear()
+        
+        # Get variables from files
+        microenv_vars = get_microenv_variables(xml_file)
+        cell_vars = get_cell_variables(xml_file, cells_file)
+        
+        # Print debug info about the variables
+        print(f"Dropdown update: Found {len(cell_vars)} cell variables")
+        print(f"Variables names: {[var['name'] for var in cell_vars]}")
+        
+        # Populate microenvironment variable dropdown
+        for var in microenv_vars:
+            var_name = var['name']
+            var_units = var.get('units', 'dimensionless')
+            self.microenv_var_combo.addItem(f"{var_name} ({var_units})", var)
+        
+        # Populate cell variable dropdown
+        for var in cell_vars:
+            var_name = var['name']
+            var_desc = var.get('description', '')
+            
+            # Ensure the variable name is properly formatted for display
+            display_name = f"{var_name}"
+            if var_desc:
+                display_name = f"{var_name} - {var_desc}"
+                
+            self.cell_var_combo.addItem(display_name, var)
+        
+        # Populate cell coloring dropdown
+        # Add "Default cell type colors" option
+        self.cell_color_combo.addItem("Default Cell Type Colors", None)
+        
+        # Add all cell variables
+        for var in cell_vars:
+            var_name = var['name']
+            var_desc = var.get('description', '')
+            
+            # Ensure the variable name is properly formatted for display
+            display_name = f"{var_name}"
+            if var_desc:
+                display_name = f"{var_name} - {var_desc}"
+                
+            self.cell_color_combo.addItem(display_name, var)
+       
+        # Emit variable selection signal to update visualization
+        self.emit_variable_selection()
+    
+    def on_microenv_var_changed(self, index):
+        """Handle microenvironment variable selection change"""
+        if index >= 0:
+            # Get selected variable
+            var = self.microenv_var_combo.itemData(index)
+            
+            # Create and emit variable selection
+            self.emit_variable_selection()
+            
+            # Highlight apply button to indicate pending changes
+            self.apply_btn.setStyleSheet("font-weight: bold; background-color: #FF5722; color: white;")
+    
+    def on_cell_var_changed(self, index):
+        """Handle cell variable selection change"""
+        if index >= 0:
+            # Get selected variable
+            var = self.cell_var_combo.itemData(index)
+            
+            # Create and emit variable selection
+            self.emit_variable_selection()
+            
+            # Highlight apply button to indicate pending changes
+            self.apply_btn.setStyleSheet("font-weight: bold; background-color: #FF5722; color: white;")
+    
+    def on_cell_color_var_changed(self, index):
+        """Handle cell color variable selection change"""
+        # Create and emit variable selection
+        self.emit_variable_selection()
+        
+        # Highlight apply button to indicate pending changes
+        self.apply_btn.setStyleSheet("font-weight: bold; background-color: #FF5722; color: white;")
+    
+    def on_display_option_changed(self):
+        """Handle any display option change"""
+        # Highlight apply button to indicate pending changes
+        self.apply_btn.setStyleSheet("font-weight: bold; background-color: #FF5722; color: white;")
+    
+    def on_slice_option_changed(self):
+        """Handle any slice option change"""
+        # Highlight apply button to indicate pending changes
+        self.apply_btn.setStyleSheet("font-weight: bold; background-color: #FF5722; color: white;")
+    
+    def emit_variable_selection(self):
+        """Create and emit the current variable selection"""
+        # Get selected microenvironment variable
+        microenv_idx = self.microenv_var_combo.currentIndex()
+        microenv_var = self.microenv_var_combo.itemData(microenv_idx) if microenv_idx >= 0 else None
+        
+        # Get selected cell variable
+        cell_idx = self.cell_var_combo.currentIndex()
+        cell_var = self.cell_var_combo.itemData(cell_idx) if cell_idx >= 0 else None
+        
+        # Get selected cell color variable
+        color_idx = self.cell_color_combo.currentIndex()
+        color_var = self.cell_color_combo.itemData(color_idx) if color_idx > 0 else None
+        
+        # Create selection dictionary
+        selection = {
+            'microenv_var': microenv_var,
+            'cell_var': cell_var,
+            'cell_color_var': color_var,
+            'wireframe': self.microenv_wireframe_cb.isChecked(),
+            'cell_as_spheres': self.cell_as_spheres_cb.isChecked()
+        }
+        
+        # Emit signal with selection
+        self.variables_selected.emit(selection)
+
+    def hide_slice_controls(self):
+        """Hide all slice-related controls when in cells-only mode"""
+        # Find all the slice controls
+        slice_controls = [
+            self.slice_x, self.slice_y, self.slice_z,
+            self.slice_i, self.slice_j, self.slice_k,
+            self.slice_auto_range_cb,
+            self.slice_min_range_input, self.slice_max_range_input
+        ]
+        
+        # Hide the slice group box by finding the parent group box
+        for widget in self.scroll_widget.findChildren(QGroupBox):
+            if widget.title() == "Slice Controls":
+                widget.setVisible(False)
+            elif widget.title() == "Slice Color Range":
+                widget.setVisible(False)
+        
+        # Disable all slice controls
+        for control in slice_controls:
+            control.setEnabled(False)

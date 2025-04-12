@@ -15,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description='PhysiCell VTK Viewer')
     parser.add_argument('--directory', '-d', type=str, help='PhysiCell output directory to load')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    parser.add_argument('--cells', action='store_true', help='Load only cell data (skip microenvironment)')
     args = parser.parse_args()
     
     # Create application
@@ -22,7 +23,7 @@ def main():
     
     # Create main window
     initial_dir = args.directory if args.directory and os.path.isdir(args.directory) else None
-    window = MainWindow(initial_dir=initial_dir, debug=args.debug)
+    window = MainWindow(initial_dir=initial_dir, debug=args.debug, cells_only=args.cells)
     window.show()
     
     # Run the application
