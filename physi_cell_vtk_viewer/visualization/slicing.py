@@ -16,6 +16,8 @@ class SliceVisualizer:
         self.slice_plane = None
         self.slice_contour_actor = None
         self.slice_contour_mapper = None
+        self.scalar_bar_actor = None
+        self.contour_actor = None  # For specific contour value
         
         # Store last valid microenvironment data and properties
         self.last_microenv_data = None
@@ -32,8 +34,16 @@ class SliceVisualizer:
         if self.slice_contour_actor:
             self.renderer.RemoveActor(self.slice_contour_actor)
             self.slice_contour_actor = None
+            
+        if self.scalar_bar_actor:
+            self.renderer.RemoveActor2D(self.scalar_bar_actor)
+            self.scalar_bar_actor = None
+            
+        if self.contour_actor:
+            self.renderer.RemoveActor(self.contour_actor)
+            self.contour_actor = None
     
-    def update_slice(self, microenv_data, microenv_vol_prop, origin, normal, auto_range, min_val=0, max_val=1):
+    def update_slice(self, microenv_data, microenv_vol_prop, origin, normal, auto_range, min_val=0, max_val=1, show_contour=False, contour_value=0.5):
         """Update the slice visualization based on current settings"""
         # Clean up existing slice actors
         self.clear_slice()
@@ -85,18 +95,32 @@ class SliceVisualizer:
         self.slice_mapper.SetInputConnection(cutter.GetOutputPort())
         self.slice_mapper.ScalarVisibilityOn()  # Show the scalars
         
-        # Use the color transfer function from the microenvironment if available
+        # Determine the scalar range to use
+        scalar_range = [min_val, max_val]  # Default to specified values
+        if auto_range:
+            if microenv_data.GetPointData() and microenv_data.GetPointData().GetScalars():
+                scalar_range = microenv_data.GetPointData().GetScalars().GetRange()
+        
+        # Get or create an appropriate color transfer function
+        ctf = None
         if microenv_vol_prop and microenv_vol_prop.GetRGBTransferFunction():
+            # Use the volume property's color transfer function
             ctf = microenv_vol_prop.GetRGBTransferFunction()
-            self.slice_mapper.SetLookupTable(ctf)
+            print(f"Using volume property CTF with range: {ctf.GetRange()}")
+        else:
+            # Create a new color transfer function with standard rainbow colors
+            ctf = vtk.vtkColorTransferFunction()
+            ctf.AddRGBPoint(scalar_range[0], 0.0, 0.0, 1.0)  # Blue for min
+            ctf.AddRGBPoint(scalar_range[0] + (scalar_range[1] - scalar_range[0]) * 0.25, 0.0, 1.0, 1.0)  # Cyan 
+            ctf.AddRGBPoint(scalar_range[0] + (scalar_range[1] - scalar_range[0]) * 0.5, 0.0, 1.0, 0.0)   # Green
+            ctf.AddRGBPoint(scalar_range[0] + (scalar_range[1] - scalar_range[0]) * 0.75, 1.0, 1.0, 0.0)  # Yellow
+            ctf.AddRGBPoint(scalar_range[1], 1.0, 0.0, 0.0)  # Red for max
+            print(f"Created new CTF with range: {scalar_range}")
             
-            # Set scalar range - use the current microenvironment range
-            if auto_range:
-                if microenv_data.GetPointData() and microenv_data.GetPointData().GetScalars():
-                    scalar_range = microenv_data.GetPointData().GetScalars().GetRange()
-                    self.slice_mapper.SetScalarRange(scalar_range)
-            else:
-                self.slice_mapper.SetScalarRange(min_val, max_val)
+        # Apply the color transfer function to the mapper
+        self.slice_mapper.SetLookupTable(ctf)
+        self.slice_mapper.SetScalarRange(scalar_range)
+        print(f"Set slice mapper scalar range to: {scalar_range}")
         
         # Create actor for the slice
         self.slice_actor = vtk.vtkActor()
@@ -123,22 +147,71 @@ class SliceVisualizer:
         self.slice_contour_mapper.SetInputConnection(triangulate.GetOutputPort())
         self.slice_contour_mapper.ScalarVisibilityOn()
         
-        # Use the same color mapping as the original slice
-        if microenv_vol_prop and microenv_vol_prop.GetRGBTransferFunction():
-            self.slice_contour_mapper.SetLookupTable(microenv_vol_prop.GetRGBTransferFunction())
-            if auto_range:
-                if microenv_data.GetPointData() and microenv_data.GetPointData().GetScalars():
-                    self.slice_contour_mapper.SetScalarRange(microenv_data.GetPointData().GetScalars().GetRange())
-            else:
-                self.slice_contour_mapper.SetScalarRange(min_val, max_val)
+        # Apply the same color transfer function to the contour mapper
+        self.slice_contour_mapper.SetLookupTable(ctf)
+        self.slice_contour_mapper.SetScalarRange(scalar_range)
         
         # Create an actor for the triangulated slice
         self.slice_contour_actor = vtk.vtkActor()
         self.slice_contour_actor.SetMapper(self.slice_contour_mapper)
         self.slice_contour_actor.GetProperty().SetOpacity(0.7)  # Slightly transparent
         
+        # Add a scalar bar (color legend) for the slice
+        scalar_bar = vtk.vtkScalarBarActor()
+        scalar_bar.SetLookupTable(ctf)
+        scalar_bar.SetTitle("Slice Values")
+        scalar_bar.SetNumberOfLabels(5)
+        scalar_bar.SetPosition(0.05, 0.85)  # Position in the top-left corner
+        scalar_bar.SetWidth(0.15)
+        scalar_bar.SetHeight(0.5)
+        scalar_bar.SetLabelFormat("%.3g")
+        self.renderer.AddActor2D(scalar_bar)
+        self.scalar_bar_actor = scalar_bar  # Store reference to the scalar bar actor
+        
         # Add the triangulated slice actor to the renderer
         self.renderer.AddActor(self.slice_contour_actor)
+        
+        # Add contour line if requested
+        if show_contour:
+            self.add_contour_line(slice_output, contour_value, scalar_range)
+    
+    def add_contour_line(self, slice_data, contour_value, scalar_range):
+        """Add a contour line at the specified value to the slice visualization"""
+        # Create a contour filter to extract the contour line
+        contour_filter = vtk.vtkContourFilter()
+        contour_filter.SetInputData(slice_data)
+        contour_filter.SetValue(0, contour_value)  # Set the contour value
+        contour_filter.Update()
+        
+        # Check if the contour contains any points
+        if contour_filter.GetOutput().GetNumberOfPoints() == 0:
+            print(f"No contour generated at value {contour_value} (outside of scalar range {scalar_range})")
+            return
+            
+        # Create a tube filter to make the contour line more visible
+        tube_filter = vtk.vtkTubeFilter()
+        tube_filter.SetInputConnection(contour_filter.GetOutputPort())
+        tube_filter.SetRadius(0.2)  # Adjust size of the tube/line
+        tube_filter.SetNumberOfSides(12)
+        tube_filter.Update()
+        
+        # Create a mapper for the contour
+        contour_mapper = vtk.vtkPolyDataMapper()
+        contour_mapper.SetInputConnection(tube_filter.GetOutputPort())
+        contour_mapper.ScalarVisibilityOff()  # Don't use scalar coloring
+        
+        # Create an actor for the contour line
+        self.contour_actor = vtk.vtkActor()
+        self.contour_actor.SetMapper(contour_mapper)
+        
+        # Set contour line color (using black for high contrast)
+        self.contour_actor.GetProperty().SetColor(0, 0, 0)  # Black
+        self.contour_actor.GetProperty().SetLineWidth(2)
+        
+        # Add the contour actor to the renderer
+        self.renderer.AddActor(self.contour_actor)
+        
+        print(f"Added contour line at value {contour_value}")
     
     def is_visible(self):
         """Check if the slice is currently visible"""
@@ -149,4 +222,8 @@ class SliceVisualizer:
         if self.slice_actor:
             self.slice_actor.SetVisibility(visible)
         if self.slice_contour_actor:
-            self.slice_contour_actor.SetVisibility(visible) 
+            self.slice_contour_actor.SetVisibility(visible)
+        if self.scalar_bar_actor:
+            self.scalar_bar_actor.SetVisibility(visible)
+        if self.contour_actor:
+            self.contour_actor.SetVisibility(visible) 

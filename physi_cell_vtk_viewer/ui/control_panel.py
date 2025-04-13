@@ -409,6 +409,31 @@ class ControlPanel(QWidget):
         
         slice_layout.addWidget(orient_group)
         
+        # Add Contour Value input
+        contour_group = QGroupBox("Slice Contour")
+        contour_layout = QVBoxLayout(contour_group)
+        
+        # Contour value input
+        contour_value_layout = QHBoxLayout()
+        contour_value_layout.addWidget(QLabel("Contour Value:"))
+        self.slice_contour_value = QDoubleSpinBox()
+        self.slice_contour_value.setRange(-1000000, 1000000)
+        self.slice_contour_value.setDecimals(6)
+        self.slice_contour_value.setValue(0.5)  # Default contour value
+        self.slice_contour_value.setEnabled(False)
+        self.slice_contour_value.valueChanged.connect(self.on_slice_option_changed)
+        contour_value_layout.addWidget(self.slice_contour_value)
+        contour_layout.addLayout(contour_value_layout)
+        
+        # Show contour checkbox
+        self.show_contour_cb = QCheckBox("Show Contour Line")
+        self.show_contour_cb.setChecked(False)
+        self.show_contour_cb.setEnabled(False)
+        self.show_contour_cb.stateChanged.connect(self.on_slice_option_changed)
+        contour_layout.addWidget(self.show_contour_cb)
+        
+        slice_layout.addWidget(contour_group)
+        
         # Show slice checkbox
         self.show_slice_cb = QCheckBox("Show Slice")
         self.show_slice_cb.setChecked(False)
@@ -586,7 +611,9 @@ class ControlPanel(QWidget):
         options = {
             'show_slice': self.show_slice_cb.isChecked(),
             'position': (self.slice_x.value(), self.slice_y.value(), self.slice_z.value()),
-            'normal': (self.slice_i.value(), self.slice_j.value(), self.slice_k.value())
+            'normal': (self.slice_i.value(), self.slice_j.value(), self.slice_k.value()),
+            'show_contour': self.show_contour_cb.isChecked(),
+            'contour_value': self.slice_contour_value.value()
         }
         
         # Emit signal with all options
@@ -618,6 +645,8 @@ class ControlPanel(QWidget):
         self.slice_i.setEnabled(True)
         self.slice_j.setEnabled(True)
         self.slice_k.setEnabled(True)
+        self.slice_contour_value.setEnabled(True)
+        self.show_contour_cb.setEnabled(True)
         self.apply_btn.setEnabled(True)
         
         # Enable variable selection dropdowns

@@ -339,10 +339,15 @@ class MainWindow(QMainWindow):
         # Get the microenvironment data
         microenv_data = self.microenv_visualizer.get_microenv_data()
         microenv_vol_prop = self.microenv_visualizer.get_microenv_vol_prop()
-        min_val, max_val = self.microenv_visualizer.get_data_range()
         
-        # Get current display options
-        display_options = self.get_display_options()
+        # Get proper slice range values from the microenvironment visualizer
+        slice_min_val, slice_max_val = self.microenv_visualizer.get_slice_data_range()
+        
+        # Debug output for the slice color range
+        if self.debug:
+            print(f"Using slice color range: {slice_min_val} to {slice_max_val}")
+            if 'show_contour' in options and options['show_contour']:
+                print(f"Will draw contour at value: {options['contour_value']}")
         
         if options['show_slice']:
             # Always update the actual slice when the slice options change
@@ -351,9 +356,11 @@ class MainWindow(QMainWindow):
                 microenv_vol_prop,
                 options['position'],
                 options['normal'],
-                display_options['auto_range'],
-                min_val,
-                max_val
+                self.collected_display_options.get('slice_auto_range', True),
+                slice_min_val,
+                slice_max_val,
+                options.get('show_contour', False),  # Pass the show_contour option
+                options.get('contour_value', 0.5)    # Pass the contour value
             )
             
             # Make slice visible
