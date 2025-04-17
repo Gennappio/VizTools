@@ -3,22 +3,9 @@
 PhysiCell Slicer (Matplotlib version): A utility to create slices of PhysiCell output data.
 
 Usage:
-    python physicell_slicer_mpl.py --filename <filename> [--log] [--position x,y,z] [--normal x,y,z] 
-                              [--substrate index] [--contour value] [--range min,max] [--colormap name] 
-                              [--output output_file.png]
-
-Parameters:
-    --filename:     Root name of PhysiCell output files (without extension)
-                    (e.g., 'output0000060' will look for output0000060.xml, output0000060_cells.mat, etc.)
-    --log:          Enable logging to output_mpl.log
-    --position:     Position of the slice plane [x,y,z] (default: [0,0,0])
-    --normal:       Normal vector of the slice plane [x,y,z] (default: [0,0,1])
-    --substrate:    Index of substrate to visualize (default: 0)
-    --contour:      Value to draw contour at (optional)
-    --range:        Value range [min,max] for the colormap (optional)
-    --colormap:     Colormap to use: jet, viridis, plasma, inferno, magma, etc. (default: jet)
-    --output:       Save image to file instead of displaying (optional)
-    --no-display:   Don't show interactive display, only save to file (default: False)
+    Simply run the script: python physicell_slicer_mpl.py
+    
+    All parameters are configured in the script itself.
 """
 
 import os
@@ -33,11 +20,33 @@ import datetime
 
 # Use backend selection based on command line args - we'll set this properly later
 import matplotlib
-# Don't set backend yet - we'll do it after parsing arguments
+# Don't set backend yet - we'll do it after setting parameters
 
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+# =============================================================================
+# CONFIGURATION - MODIFY PARAMETERS HERE
+# =============================================================================
+
+# Main parameters
+FILENAME = "../../PhysiCell_micro/PhysiCell/output/output00000002"  # Root name of PhysiCell output files
+POSITION = [0, 0, 0]                       # Position of the slice plane [x,y,z]
+NORMAL = [0, 0, 1]                         # Normal vector of the slice plane [x,y,z]
+SUBSTRATE_INDEX = 11                        # Index of substrate to visualize
+CONTOUR_VALUE = None                       # Value to draw contour at (None for no contour)
+VALUE_RANGE = None                         # Value range [min,max] for the colormap (None for auto-range)
+COLORMAP = 'jet'                           # Colormap to use: jet, viridis, plasma, inferno, magma, etc.
+OUTPUT_FILE = None                         # Save image to file instead of displaying (None to auto-generate)
+
+# Advanced parameters
+ENABLE_LOGGING = True                      # Enable logging to output_mpl.log
+DISPLAY_FIGURE = True                      # Show interactive display
+FIGURE_DPI = 100                           # DPI for the output image
+FIGURE_SIZE = (10, 8)                      # Figure size in inches (width, height)
+GRID_POINTS = 100                          # Number of grid points for interpolation (lower = faster)
+DOWNSAMPLE_FACTOR = 1                      # Downsample factor for the input data (higher = faster)
 
 # =============================================================================
 # LOGGING SETUP
@@ -136,6 +145,21 @@ def find_output_files(filename, logger=None):
     
     return files
 
+def count_substrates_from_data(microenv_data, logger=None):
+    """Count the number of substrates in the microenvironment data."""
+    if microenv_data is None:
+        if logger:
+            logger.error("No microenvironment data available")
+        return 0
+    
+    # First 4 rows are x,y,z positions and time
+    num_substrates = microenv_data.shape[0] - 4
+    
+    if logger:
+        logger.info(f"Detected {num_substrates} substrates in microenvironment data")
+    
+    return num_substrates
+
 def load_microenvironment_data(microenv_file, logger=None):
     """Load microenvironment data from a .mat file."""
     if logger:
@@ -174,47 +198,195 @@ def parse_substrates_from_xml(xml_file, logger=None):
     if not xml_file or not os.path.exists(xml_file):
         if logger:
             logger.warning(f"XML file not found: {xml_file}")
-        return None
-    
-    if logger:
-        logger.info(f"Parsing substrate names from {xml_file}")
+        return []
     
     try:
+        if logger:
+            logger.info(f"Parsing XML file: {xml_file}")
+        
         tree = ET.parse(xml_file)
         root = tree.getroot()
         
-        substrates = []
+        # Log XML structure for debugging
+        if logger:
+            logger.info(f"XML root tag: {root.tag}")
+            logger.info(f"First level tags: {[child.tag for child in root]}")
         
-        # Try to find substrates in different possible XML structures
-        microenv_nodes = root.findall('.//microenvironment_setup')
-        if microenv_nodes:
-            for microenv in microenv_nodes:
-                for variable in microenv.findall('.//variable'):
-                    name = variable.find('name')
-                    if name is not None and name.text:
-                        substrates.append(name.text.strip())
+        # Try multiple possible paths for microenvironment node
+        possible_paths = [
+            ".//microenvironment",
+            ".//microenvironment_setup",
+            ".//domain/microenvironment",
+            ".//PhysiCell_settings/microenvironment_setup"
+        ]
         
-        # If no substrates found in the primary location, try alternative locations
-        if not substrates:
-            for variable in root.findall('.//variable'):
-                name = variable.find('name')
-                if name is not None and name.text:
-                    substrates.append(name.text.strip())
+        microenv_node = None
+        for path in possible_paths:
+            if logger:
+                logger.info(f"Trying microenvironment path: {path}")
+            node = root.find(path)
+            if node is not None:
+                microenv_node = node
+                if logger:
+                    logger.info(f"Found microenvironment node with path: {path}")
+                break
+        
+        if microenv_node is None:
+            if logger:
+                logger.warning("No microenvironment node found in XML using common paths")
+                logger.info("Trying to find any node containing variable definitions...")
+            
+            # Last resort: look for any nodes that might contain variable definitions
+            variable_nodes = root.findall(".//variable")
+            if variable_nodes:
+                if logger:
+                    logger.info(f"Found {len(variable_nodes)} variable nodes directly in the XML")
+                # Process these nodes directly without a microenvironment parent
+                substrate_names = []
+                for var_node in variable_nodes:
+                    name_node = var_node.find("name")
+                    if name_node is not None and name_node.text:
+                        substrate_names.append(name_node.text.strip())
+                        if logger:
+                            logger.info(f"Found substrate: {name_node.text.strip()}")
+                
+                return substrate_names
+            else:
+                if logger:
+                    logger.warning("No variable nodes found in the XML")
+                return []
+        
+        # Extract variable nodes from the found microenvironment node
+        # Try different possible variable container paths
+        variable_containers = [
+            microenv_node,  # Variables directly in microenvironment
+            microenv_node.find("domain"),  # Variables in domain
+            microenv_node.find("variables"),  # Variables in variables container
+        ]
+        
+        variable_nodes = []
+        for container in variable_containers:
+            if container is not None:
+                vars_found = container.findall(".//variable")
+                if not vars_found:
+                    # Try direct children
+                    vars_found = container.findall("variable")
+                
+                if vars_found:
+                    variable_nodes = vars_found
+                    break
+        
+        if not variable_nodes:
+            # One more attempt with a direct search in the microenvironment node
+            variable_nodes = microenv_node.findall(".//variable")
         
         if logger:
-            if substrates:
-                logger.info(f"Found {len(substrates)} substrates: {substrates}")
+            logger.info(f"Found {len(variable_nodes) if variable_nodes else 0} variable nodes")
+        
+        substrate_names = []
+        
+        # Look for name in different possible locations
+        for var_node in variable_nodes:
+            # Try finding name node as direct child
+            name_node = var_node.find("name")
+            
+            # If not found, try id node
+            if name_node is None or not name_node.text:
+                name_node = var_node.find("ID")
+            
+            # If still not found, try attribute
+            if (name_node is None or not name_node.text) and 'name' in var_node.attrib:
+                substrate_names.append(var_node.attrib['name'])
+                if logger:
+                    logger.info(f"Found substrate from attribute: {var_node.attrib['name']}")
+            elif name_node is not None and name_node.text:
+                substrate_names.append(name_node.text.strip())
+                if logger:
+                    logger.info(f"Found substrate: {name_node.text.strip()}")
+        
+        # If we still don't have names, look for any text in the variable nodes
+        if not substrate_names:
+            for i, var_node in enumerate(variable_nodes):
+                # Use any text content as name
+                if var_node.text and var_node.text.strip():
+                    substrate_names.append(var_node.text.strip())
+                    if logger:
+                        logger.info(f"Found substrate from text content: {var_node.text.strip()}")
+                else:
+                    # As a last resort, use the tag with index
+                    substrate_names.append(f"variable_{i}")
+                    if logger:
+                        logger.info(f"Using default name: variable_{i}")
+        
+        if logger:
+            if substrate_names:
+                logger.info(f"Found {len(substrate_names)} substrates: {substrate_names}")
             else:
                 logger.warning("No substrate names found in XML file")
         
-        return substrates
+        return substrate_names
     
     except Exception as e:
         if logger:
             logger.error(f"Error parsing XML file: {e}")
             import traceback
             logger.error(traceback.format_exc())
-        return None
+        return []
+
+def find_physicell_settings_xml(base_dir, logger=None):
+    """
+    Try to find the PhysiCell_settings.xml file that might contain substrate names.
+    
+    Args:
+        base_dir: Base directory to start the search
+        logger: Logger object
+        
+    Returns:
+        Path to PhysiCell_settings.xml if found, None otherwise
+    """
+    if logger:
+        logger.info(f"Looking for PhysiCell_settings.xml in/near {base_dir}")
+    
+    # First check the immediate directory
+    settings_file = os.path.join(base_dir, "PhysiCell_settings.xml")
+    if os.path.exists(settings_file):
+        if logger:
+            logger.info(f"Found settings file at {settings_file}")
+        return settings_file
+    
+    # Try parent directory
+    parent_dir = os.path.dirname(base_dir)
+    settings_file = os.path.join(parent_dir, "PhysiCell_settings.xml")
+    if os.path.exists(settings_file):
+        if logger:
+            logger.info(f"Found settings file at {settings_file}")
+        return settings_file
+    
+    # Try config subdirectory of parent
+    config_dir = os.path.join(parent_dir, "config")
+    settings_file = os.path.join(config_dir, "PhysiCell_settings.xml")
+    if os.path.exists(settings_file):
+        if logger:
+            logger.info(f"Found settings file at {settings_file}")
+        return settings_file
+    
+    # Try a few other common locations
+    common_locations = [
+        os.path.join(parent_dir, ".."), # Grandparent directory
+        os.path.join(parent_dir, "..", "config"),
+        os.path.join(base_dir, "config")
+    ]
+    
+    for location in common_locations:
+        settings_file = os.path.join(location, "PhysiCell_settings.xml")
+        if os.path.exists(settings_file):
+            if logger:
+                logger.info(f"Found settings file at {settings_file}")
+            return settings_file
+    
+    if logger:
+        logger.warning("Could not find PhysiCell_settings.xml file")
+    return None
 
 def get_substrate_name(substrate_index, substrates, logger=None):
     """Get substrate name for the given index."""
@@ -696,109 +868,175 @@ def create_slice_visualization(filename, position, normal, substrate_index,
 # MAIN FUNCTION
 # =============================================================================
 
+def log_substrate_details(logger, substrate_names, microenv_data):
+    """Log detailed substrate information with indices, names, and value ranges."""
+    if logger and microenv_data is not None:
+        logger.info("\n" + "-" * 60)
+        logger.info("Index  Name                           Min Value    Max Value   ")
+        logger.info("-" * 60)
+        
+        # Calculate how many substrates are in the data
+        num_substrates = microenv_data.shape[0] - 4  # First 4 rows are x,y,z,time
+        
+        # Ensure we have names for all substrates
+        if len(substrate_names) < num_substrates:
+            # Add generic names for missing substrates
+            for i in range(len(substrate_names), num_substrates):
+                substrate_names.append(f"substrate_{i}")
+        
+        # Log each substrate with its min and max values
+        for i in range(num_substrates):
+            substrate_data = microenv_data[i + 4, :]  # +4 to skip x,y,z,time
+            min_val = np.min(substrate_data)
+            max_val = np.max(substrate_data)
+            name = substrate_names[i] if i < len(substrate_names) else f"substrate_{i}"
+            
+            # Format nicely
+            logger.info(f"{i:<6} {name:<30} {min_val:<11.6f} {max_val:<11.6f}")
+        
+        logger.info("-" * 60)
+        logger.info("")  # Empty line at the end
+
 def main():
     """Main function to run the PhysiCell slicer."""
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='PhysiCell Slicer (Matplotlib version)')
-    parser.add_argument('--filename', required=True, help='Root name of PhysiCell output files')
-    parser.add_argument('--log', action='store_true', help='Enable logging to output_mpl.log')
-    parser.add_argument('--position', default='0,0,0', help='Position of the slice plane [x,y,z]')
-    parser.add_argument('--normal', default='0,0,1', help='Normal vector of the slice plane [x,y,z]')
-    parser.add_argument('--substrate', type=int, default=0, help='Index of substrate to visualize')
-    parser.add_argument('--contour', type=float, help='Value to draw contour at')
-    parser.add_argument('--range', help='Value range [min,max] for the colormap')
-    parser.add_argument('--colormap', default='jet', help='Colormap to use')
-    parser.add_argument('--output', help='Save image to file instead of displaying')
-    parser.add_argument('--no-display', action='store_true', help='Don\'t show interactive display, only save to file')
-    parser.add_argument('--dpi', type=int, default=100, help='DPI for the output image')
-    parser.add_argument('--grid-points', type=int, default=None, help='Number of grid points for interpolation (lower = faster)')
-    parser.add_argument('--downsample', type=int, default=1, help='Downsample factor for the input data (higher = faster)')
-    args = parser.parse_args()
-    
-    # Set up logging
-    logger = setup_logging(args.log)
-    
-    # IMPORTANT: Configure matplotlib backend BEFORE importing pyplot functionality
-    # This avoids the backend switching issue
-    if args.no_display:
+    # Configure the matplotlib backend based on display settings
+    if not DISPLAY_FIGURE:
         matplotlib.use('Agg')  # Non-interactive backend for saving only
-        logger.info("Using non-interactive Agg backend for saving without display")
+        print("Using non-interactive Agg backend for saving without display")
     else:
         # Use an appropriate interactive backend based on platform
         if sys.platform == 'darwin':  # macOS
             matplotlib.use('MacOSX')
-            logger.info("Using MacOSX backend for interactive display")
+            print("Using MacOSX backend for interactive display")
         else:
             try:
                 matplotlib.use('TkAgg')
-                logger.info("Using TkAgg backend for interactive display")
+                print("Using TkAgg backend for interactive display")
             except ImportError:
-                logger.warning("TkAgg not available, trying Qt5Agg")
+                print("TkAgg not available, trying Qt5Agg")
                 try:
                     matplotlib.use('Qt5Agg')
-                    logger.info("Using Qt5Agg backend for interactive display")
+                    print("Using Qt5Agg backend for interactive display")
                 except ImportError:
-                    logger.warning("No interactive backend available, falling back to Agg")
+                    print("No interactive backend available, falling back to Agg")
                     matplotlib.use('Agg')
-                    logger.info("Using non-interactive Agg backend (interactive display not available)")
-                    args.no_display = True  # Force no-display mode since we can't show interactively
+                    print("Using non-interactive Agg backend (interactive display not available)")
     
-    # Process arguments
-    logger.info(f"Processing PhysiCell output with root: {args.filename}")
+    # Set up logging
+    logger = setup_logging(ENABLE_LOGGING)
     
-    # Parse position
-    try:
-        position = [float(x) for x in args.position.split(',')]
-        if len(position) != 3:
-            logger.error("Position must be specified as x,y,z")
-            return
-    except ValueError:
-        logger.error("Invalid position format. Must be x,y,z (e.g., 100,100,50)")
-        return
+    logger.info(f"Processing PhysiCell output with root: {FILENAME}")
     
-    # Parse normal
-    try:
-        normal = [float(x) for x in args.normal.split(',')]
-        if len(normal) != 3:
-            logger.error("Normal must be specified as x,y,z")
-            return
-    except ValueError:
-        logger.error("Invalid normal format. Must be x,y,z (e.g., 0,0,1)")
-        return
+    # Find PhysiCell output files
+    files = find_output_files(FILENAME, logger)
     
-    # Parse range if provided
-    value_range = None
-    if args.range:
-        try:
-            value_range = [float(x) for x in args.range.split(',')]
-            if len(value_range) != 2:
-                logger.error("Range must be specified as min,max")
-                return
-            logger.info(f"Using custom range: {value_range[0]} to {value_range[1]}")
-        except ValueError:
-            logger.error("Invalid range format. Must be min,max (e.g., 0,1)")
-            return
+    # Load microenvironment data
+    microenv_data = load_microenvironment_data(files['microenv_file'], logger)
+    if microenv_data is None:
+        logger.error("Failed to load microenvironment data")
+        return 1
     
-    # Generate default output filename if no output specified
-    output_file = args.output
+    # Count substrates from microenvironment data
+    num_substrates = count_substrates_from_data(microenv_data, logger)
+    
+    # Try to get substrate names from XML file
+    substrates = parse_substrates_from_xml(files['xml_file'], logger)
+    
+    # If no substrates found in output XML, try looking for PhysiCell_settings.xml
+    if not substrates or len(substrates) == 0:
+        logger.info("No substrate names found in output XML, looking for PhysiCell_settings.xml")
+        base_dir = os.path.dirname(files['microenv_file']) if files['microenv_file'] else os.path.dirname(FILENAME)
+        settings_file = find_physicell_settings_xml(base_dir, logger)
+        if settings_file:
+            logger.info(f"Trying to parse substrate names from {settings_file}")
+            substrates = parse_substrates_from_xml(settings_file, logger)
+    
+    # Check if we found substrate names that match the count in the data
+    if not substrates:
+        logger.warning("No substrate names found in XML file")
+        substrates = [f"substrate_{i}" for i in range(num_substrates)]
+        logger.info(f"Using default substrate names")
+    elif len(substrates) != num_substrates:
+        logger.warning(f"Number of substrate names from XML ({len(substrates)}) doesn't match number of substrates in data ({num_substrates})")
+        # Expand or truncate the list as needed
+        if len(substrates) < num_substrates:
+            # Add generic names for missing substrates
+            for i in range(len(substrates), num_substrates):
+                substrates.append(f"substrate_{i}")
+            logger.info(f"Added default names for missing substrates")
+        else:
+            # Truncate extra names
+            substrates = substrates[:num_substrates]
+            logger.info(f"Truncated extra substrate names")
+    
+    # Log substrate details exactly like physicell_slicer.py does
+    log_substrate_details(logger, substrates, microenv_data)
+    
+    # Verify the selected substrate index is valid
+    if SUBSTRATE_INDEX < 0 or SUBSTRATE_INDEX >= num_substrates:
+        logger.warning(f"Selected substrate index {SUBSTRATE_INDEX} is out of range (0-{num_substrates-1})!")
+        logger.warning("Using substrate 0 instead")
+        selected_substrate_idx = 0
+    else:
+        selected_substrate_idx = SUBSTRATE_INDEX
+    
+    # Get substrate name for the selected index
+    selected_substrate_name = substrates[selected_substrate_idx] if selected_substrate_idx < len(substrates) else f"substrate_{selected_substrate_idx}"
+    
+    # Get substrate range
+    substrate_values = microenv_data[selected_substrate_idx + 4, :]
+    min_val = np.min(substrate_values)
+    max_val = np.max(substrate_values)
+    logger.info(f"Using substrate: {selected_substrate_idx} - {selected_substrate_name} (range: {min_val:.4f} to {max_val:.4f})")
+    
+    # Also print to console for user convenience
+    print("\nAvailable substrates:")
+    print("-" * 40)
+    print(f"{'Index':<6} {'Substrate Name':<30} {'Range':<20}")
+    print("-" * 40)
+    
+    for idx in range(num_substrates):
+        substrate_values = microenv_data[idx + 4, :]
+        min_val = np.min(substrate_values)
+        max_val = np.max(substrate_values)
+        name = substrates[idx] if idx < len(substrates) else f"substrate_{idx}"
+        
+        # Print with highlighting for non-zero substrates
+        has_data = max_val > 0
+        range_info = f"{min_val:.4f} to {max_val:.4f}"
+        
+        # Add an indicator for the currently selected substrate
+        is_selected = (idx == SUBSTRATE_INDEX)
+        selector = "=>" if is_selected else "  "
+        
+        if has_data:
+            print(f"{selector} {idx:<3} {name:<30} {range_info:<20} *HAS DATA*")
+        else:
+            print(f"{selector} {idx:<3} {name:<30} {range_info:<20}")
+    
+    print("-" * 40)
+    print(f"Using substrate: {selected_substrate_idx} - {selected_substrate_name} (range: {min_val:.4f} to {max_val:.4f})\n")
+    
+    # Generate default output filename if needed
+    output_file = OUTPUT_FILE
     if not output_file:
-        base_name = os.path.basename(args.filename)
-        output_file = f"{base_name}_s{args.substrate}_slice.png"
+        base_name = os.path.basename(FILENAME)
+        output_file = f"{base_name}_s{SUBSTRATE_INDEX}_slice.png"
         logger.info(f"Using default output filename: {output_file}")
     
     # Create the visualization
     try:
         fig = create_slice_visualization(
-            filename=args.filename,
-            position=position,
-            normal=normal,
-            substrate_index=args.substrate,
-            contour_value=args.contour,
-            colormap=args.colormap,
-            value_range=value_range,
+            filename=FILENAME,
+            position=POSITION,
+            normal=NORMAL,
+            substrate_index=SUBSTRATE_INDEX,
+            contour_value=CONTOUR_VALUE,
+            colormap=COLORMAP,
+            value_range=VALUE_RANGE,
             output_file=output_file,
-            fig_size=(10, 8),
-            dpi=args.dpi,
+            fig_size=FIGURE_SIZE,
+            dpi=FIGURE_DPI,
             logger=logger
         )
         
@@ -806,8 +1044,8 @@ def main():
             logger.info(f"Figure saved to {output_file}")
             logger.info("Visualization complete")
             
-            # Only try to display if explicitly requested (not the default)
-            if not args.no_display:
+            # Only try to display if requested
+            if DISPLAY_FIGURE:
                 logger.info("Displaying figure interactively (close window to exit)...")
                 plt.show()
                 logger.info("Figure window closed")
